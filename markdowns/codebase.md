@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-23, milestone M1 (mock employee data, `get_employee_info` as a pure function, JSON logging)
+**Last updated:** 2026-11-23, milestone M1 (mock employee data, `get_employee_info` as a pure function, JSON logging, MCP server with `get_employee_info`)
 
 ---
 
@@ -17,15 +17,17 @@ Policy decisions are made by plain, tested Python functions. The LLM only interp
 
 ## 2. Current state
 
-M0 is done. In M1, the mock employee data, its validating loader and `get_employee_info` exist as plain functions with tests, as does the JSON logging module. Nothing is exposed over MCP yet. The MCP tool wrapper comes next.
+M0 is done. In M1, the mock employee data, its validating loader and `get_employee_info` exist as plain functions with tests, as does the JSON logging module. The real MCP server exposes one tool, `get_employee_info`, over streamable HTTP, and `scripts/client_demo.py` calls it. The other three tools come in M2 to M4.
 
 | File | What it does | Status |
 |---|---|---|
 | `src/it_requests/config.py` | `REFERENCE_DATE = 2026-11-22`, the fixed "today" for every policy check. `DATA_DIR` and `EMPLOYEES_FILE`, resolved from the file's own location. | Tested |
 | `data/employees.json` | The six employees from REQUIREMENTS §8, with fixed asset IDs. Top-level `data_version` (`employees-v1`) and `effective_date` (`2026-11-22`). | Tested (loads and validates) |
 | `src/it_requests/data.py` | Pydantic models (`EquipmentItem`, `Employee`, `EmployeeDirectory`), the `Role`, `Status` and `CatalogItem` literals, the `ROLES` and `CATALOG_ITEMS` tuples, `EMPLOYEE_ID_PATTERN`, `DataValidationError` and `load_employees(path)`. | Tested, 100% coverage |
-| `src/it_requests/employees.py` | `normalize_employee_id`, `tenure_months` and `get_employee_info`: the pure function behind the future MCP tool (REQUIREMENTS §7.1). | Tested, 100% coverage |
-| `src/it_requests/observability.py` | `request_id_var`, `REDACTED_KEYS`, `JsonFormatter`, `log_event` and `configure_logging`: structured JSON logging for the server and, later, the agent (PLAN §5). | Tested, 100% coverage; not yet called by any component |
+| `src/it_requests/employees.py` | `normalize_employee_id`, `tenure_months` and `get_employee_info`: the pure function behind the MCP tool (REQUIREMENTS §7.1). | Tested, 100% coverage |
+| `src/it_requests/observability.py` | `request_id_var`, `REDACTED_KEYS`, `JsonFormatter`, `log_event` and `configure_logging`: structured JSON logging for the server and, later, the agent (PLAN §5). | Tested, 100% coverage; used by `server.py` |
+| `src/it_requests/server.py` | `build_server(directory, *, as_of)` registers the `get_employee_info` tool as a thin wrapper that logs one `tool.call` event. `main()` configures logging, loads the data, logs `server.start` and serves on `http://127.0.0.1:8000/mcp`. | Integration-tested in-process; `main()` checked by hand |
+| `scripts/client_demo.py` | Connects over HTTP, lists the tools, and calls `get_employee_info` for `E1001`, `" e1001 "` and `E9999` (screenshot for deliverable #2). | Checked by hand |
 | `examples/step1/server.py`, `client.py` | Brief step 1: a minimal "Demo" MCP server with a trivial `get_employee_id` tool, plus a client that calls it. | Kept unchanged as submission evidence |
 
 ### `data.py` in detail
@@ -65,6 +67,20 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
   - Sets `propagate = False`.
 - **Not yet included:** `trace_id` and `span_id` (PLAN §5). They arrive with tracing in M5.
 
+### `server.py` in detail
+
+- **`build_server(directory, *, as_of=REFERENCE_DATE)`:** a factory. Tests inject their own data, and importing the module never reads files or opens ports.
+- **The `get_employee_info` tool:**
+  - Calls `employees.get_employee_info` and returns its dict unchanged, including error dicts. `is_error` therefore stays `False` for `EMPLOYEE_NOT_FOUND`.
+  - Logs one `tool.call` event with `tool`, `employee_id` (the raw input), `status` (`ok` or the error code), `data_version` and `duration_ms`.
+  - Never logs the employee's name.
+- **The tool description:** the function's docstring, word for word REQUIREMENTS §7.1.
+- **`main()`:**
+  - Configures logging, to stderr and `logs/app.jsonl`, and loads `data/employees.json`.
+  - Logs `server.start`, with `data_version`, `employee_count`, `host` and `port`.
+  - Runs streamable HTTP on `127.0.0.1:8000`.
+- **Ways to start it:** `make serve`, `python -m it_requests.server` or the installed `it-requests-server` command.
+
 ## 3. Layout
 
 ```
@@ -75,12 +91,15 @@ Build-MCP/
 │   ├── data.py             # Pydantic data models and load_employees
 │   ├── employees.py        # get_employee_info and its helpers (pure)
 │   ├── observability.py    # JSON logging: log_event, configure_logging
+│   ├── server.py           # MCP server: build_server (thin tool wrappers) and main
 │   └── py.typed            # marks the package as typed for mypy
 ├── data/
 │   └── employees.json      # mock employees (REQUIREMENTS §8)
 ├── tests/
 │   ├── unit/               # test_config, test_data, test_employees, test_observability
-│   └── integration/        # tools through MCP, agent loop with a fake LLM (from M4)
+│   └── integration/        # conftest (server fixture), test_server_employee_tool
+├── scripts/
+│   └── client_demo.py      # calls the running server over HTTP
 ├── examples/step1/         # brief step-1 demo (do not modify)
 ├── markdowns/              # REQUIREMENTS, PLAN, codebase, MILESTONES, prompts/
 ├── .github/workflows/ci.yml
@@ -118,6 +137,12 @@ directory = load_employees(config.EMPLOYEES_FILE)
 get_employee_info(" e1001 ", directory=directory)  # E1001's record, tenure_months 65
 ```
 
+**MCP server and demo client** (two terminals):
+```bash
+make serve          # terminal 1: serves on http://127.0.0.1:8000/mcp, logs to stderr and logs/app.jsonl
+make client-demo    # terminal 2: lists tools, calls get_employee_info for E1001, " e1001 " and E9999
+```
+
 **Step-1 demo server and client:**
 ```bash
 python examples/step1/server.py   # terminal 1: serves on http://localhost:8000/mcp
@@ -149,8 +174,8 @@ Each entry: the decision, and why.
 7. **CI order: format, lint, types, unit tests, integration tests, dependency audit.**
    *Why:* fast checks first, so the cheapest failure is reported first. CI never calls the Claude API, so it is free, deterministic and needs no secrets.
 
-8. **The integration-test step accepts "no tests collected" for now** (`|| [ $? -eq 5 ]`).
-   *Why:* pytest returns exit code 5 when it finds no tests. Integration tests arrive in M4. Any real test failure still fails the build. Remove the workaround once integration tests exist.
+8. **Coverage is measured across both test layers and checked once.** In CI, the unit step runs with `--cov-fail-under=0`, and the integration step uses `--cov-append` and applies the 90% threshold. (This replaced the earlier "no tests collected" workaround, `|| [ $? -eq 5 ]`, which was removed once integration tests existed.)
+   *Why:* `server.py` is only exercised by integration tests. Unit tests alone reach 87%, so a unit-only check would fail even though the combined coverage is 100%.
 
 9. **Ruff rule SIM300 is turned off.**
    *Why:* it flags `config.REFERENCE_DATE == date(...)` as a "Yoda condition" because the name is upper-case, and suggests the less readable order.
@@ -200,6 +225,27 @@ Each entry: the decision, and why.
 24. **`configure_logging` replaces handlers instead of adding to them, and sets `propagate = False`.**
     *Why:* calling it again (in tests, or on an in-process restart) must not double every line. Propagating to the root logger could print each record a second time in another format.
 
+25. **The server is built by a factory, `build_server`, not created at module level.**
+    *Why:* tests inject data, and importing the module has no side effects (no file reads, no open ports).
+
+26. **Tool functions are annotated `-> dict[str, Any]`, not bare `dict`.**
+    *Why:* with bare `dict`, mcp 2.3.0 returns only text and no `structured_content` (verified).
+
+27. **The tool docstring is one long line (`# noqa: E501`).**
+    *Why:* the docstring is the description the model sees, and it must equal REQUIREMENTS §7.1 exactly. Wrapping it would add line breaks.
+
+28. **Integration tests use `Client(server)` in-process.**
+    *Why:* they cover the real protocol, schema and structured output, but CI needs no open port. This settles the open question in PLAN decision 4: SDK 2.3 supports in-process clients, so the stdio fallback isn't needed.
+
+29. **The server binds to `127.0.0.1` only.**
+    *Why:* it is a local mock server and must never be reachable from the network.
+
+30. **`main()` is excluded from coverage (`# pragma: no cover`).**
+    *Why:* it starts a blocking network server. Everything it calls is tested separately, and it was checked by hand with `make serve` and `make client-demo`.
+
+31. **`duration_ms` uses `time.perf_counter()`.**
+    *Why:* it is monotonic, so a system clock change can't produce a negative or wrong duration.
+
 ## 6. Change log
 
 | Date | Milestone | Change | Why |
@@ -219,6 +265,7 @@ Each entry: the decision, and why.
 | 2026-11-23 | M1 | Failing tests for JSON logging (`test_observability.py`) | TDD red step |
 | 2026-11-23 | M1 | `observability.py`: `JsonFormatter`, `log_event`, `configure_logging`, `request_id_var`, redaction | One structured logging path for the server and agent (PLAN §5) |
 | 2026-11-23 | M1 | Failing integration tests for the `get_employee_info` MCP tool (`tests/integration/`) | TDD red step |
+| 2026-11-23 | M1 | `server.py` (`build_server`, `main`), `scripts/client_demo.py`, `it-requests-server` script, `make serve` / `make client-demo`, CI coverage across both layers; `tests/integration/.gitkeep` removed | `get_employee_info` exposed over MCP and proven end to end over HTTP |
 
 ## 7. Known issues and fixes
 

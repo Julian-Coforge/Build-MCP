@@ -9,11 +9,11 @@ from datetime import date
 from typing import Any
 
 from it_requests import config
-from it_requests.data import EmployeeDirectory
+from it_requests.data import EMPLOYEE_ID_PATTERN, EmployeeDirectory
 
-# [0-9], not \d: \d also matches non-ASCII digits (e.g. Arabic-Indic), which are not valid
-# IDs. fullmatch, not match with $: $ would accept a trailing newline.
-_EMPLOYEE_ID = re.compile(r"E[0-9]{4}")
+# Shared pattern from data.py, so input normalisation accepts exactly what the data allows.
+# fullmatch, not match: in Python's re, a bare $ would also accept a trailing newline.
+_EMPLOYEE_ID = re.compile(EMPLOYEE_ID_PATTERN)
 
 
 def normalize_employee_id(raw: str) -> str | None:

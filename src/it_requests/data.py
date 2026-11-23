@@ -24,6 +24,13 @@ CATALOG_ITEMS: tuple[str, ...] = get_args(CatalogItem)
 
 NonEmptyStr = Annotated[str, Field(min_length=1)]
 
+# The one definition of a valid employee ID (REQUIREMENTS §2.2: E####). employees.py
+# imports it, so the data check and the input check cannot drift apart.
+# [0-9], not \d: \d also matches non-ASCII digits (e.g. Arabic-Indic "E١٠٠١"), which would
+# load fine but never match the ASCII ID a lookup uses. Works as-is in both Pydantic's
+# regex engine and Python's re.fullmatch.
+EMPLOYEE_ID_PATTERN = r"^E[0-9]{4}$"
+
 # extra="forbid": a typo'd or unexpected field (e.g. "hire_dte") is an error, not silently
 # ignored. frozen=True: loaded records are shared read-only state; no tool may mutate them.
 _STRICT = ConfigDict(extra="forbid", frozen=True)
@@ -44,7 +51,7 @@ class EquipmentItem(BaseModel):
 class Employee(BaseModel):
     model_config = _STRICT
 
-    employee_id: Annotated[str, Field(pattern=r"^E\d{4}$")]
+    employee_id: Annotated[str, Field(pattern=EMPLOYEE_ID_PATTERN)]
     name: NonEmptyStr
     role: Role
     hire_date: date
@@ -121,6 +128,7 @@ def load_employees(path: Path) -> EmployeeDirectory:
 
 __all__ = [
     "CATALOG_ITEMS",
+    "EMPLOYEE_ID_PATTERN",
     "ROLES",
     "CatalogItem",
     "DataValidationError",

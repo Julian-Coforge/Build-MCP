@@ -2,14 +2,11 @@
 
 import io
 import json
-import logging
-from collections.abc import Iterator
+from typing import Any
 
 import pytest
 from mcp import Client
 from mcp.server import MCPServer
-
-from it_requests.observability import JsonFormatter
 
 pytestmark = pytest.mark.anyio
 
@@ -21,12 +18,14 @@ EXPECTED_DESCRIPTION = (
 )
 
 
-async def test_lists_exactly_the_employee_tool(server: MCPServer) -> None:
+async def test_lists_exactly_the_registered_tools(server: MCPServer) -> None:
     async with Client(server) as client:
         result = await client.list_tools()
 
-    assert [t.name for t in result.tools] == ["get_employee_info"]
-    assert result.tools[0].description == EXPECTED_DESCRIPTION
+    # Sorted, so the test doesn't depend on registration order.
+    assert sorted(t.name for t in result.tools) == ["get_employee_info", "get_policy_limits"]
+    tool = next(t for t in result.tools if t.name == "get_employee_info")
+    assert tool.description == EXPECTED_DESCRIPTION
 
 
 async def test_known_employee_returns_structured_record(server: MCPServer) -> None:
@@ -58,20 +57,9 @@ async def test_messy_id_normalises_through_protocol(server: MCPServer) -> None:
     assert result.structured_content["employee_id"] == "E1001"
 
 
-@pytest.fixture
-def server_log() -> Iterator[io.StringIO]:
-    # Capture the "server" logger as JSON lines. configure_logging isn't called in tests,
-    # so attach a handler and level here, and restore both afterwards.
-    logger = logging.getLogger("server")
-    old_handlers, old_level, old_propagate = logger.handlers, logger.level, logger.propagate
-    stream = io.StringIO()
-    handler = logging.StreamHandler(stream)
-    handler.setFormatter(JsonFormatter())
-    logger.handlers = [handler]
-    logger.setLevel(logging.DEBUG)
-    logger.propagate = False
-    yield stream
-    logger.handlers, logger.level, logger.propagate = old_handlers, old_level, old_propagate
+def _tool_calls(stream: io.StringIO) -> list[dict[str, Any]]:
+    records = [json.loads(line) for line in stream.getvalue().splitlines()]
+    return [r for r in records if r["event"] == "tool.call"]
 
 
 async def test_tool_call_logs_one_event_without_name(
@@ -80,14 +68,36 @@ async def test_tool_call_logs_one_event_without_name(
     async with Client(server) as client:
         await client.call_tool("get_employee_info", {"employee_id": "E1001"})
 
-    lines = server_log.getvalue().splitlines()
-    tool_calls = [json.loads(line) for line in lines if json.loads(line)["event"] == "tool.call"]
+    tool_calls = _tool_calls(server_log)
     assert len(tool_calls) == 1
     record = tool_calls[0]
     assert record["tool"] == "get_employee_info"
     assert record["employee_id"] == "E1001"
+    assert record["resolved_employee_id"] == "E1001"
     assert record["status"] == "ok"
     assert record["data_version"] == "employees-v1"
     assert isinstance(record["duration_ms"], int | float)
     # Employee names are never logged (CLAUDE.md, PLAN §5): check the raw text, not just keys.
     assert "Priya" not in server_log.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("sent", "resolved", "status"),
+    [
+        # Raw input kept exactly as sent; resolved shows who it matched.
+        (" e1001 ", "E1001", "ok"),
+        # Any error resolves to nobody: null, not a guess.
+        ("E9999", None, "EMPLOYEE_NOT_FOUND"),
+        ("abc", None, "INVALID_EMPLOYEE_ID"),
+    ],
+)
+async def test_log_shows_raw_and_resolved_employee_id(
+    server: MCPServer, server_log: io.StringIO, sent: str, resolved: str | None, status: str
+) -> None:
+    async with Client(server) as client:
+        await client.call_tool("get_employee_info", {"employee_id": sent})
+
+    record = _tool_calls(server_log)[0]
+    assert record["employee_id"] == sent
+    assert record["resolved_employee_id"] == resolved
+    assert record["status"] == status

@@ -308,6 +308,7 @@ Each entry: the decision, and why.
 | 2026-11-23 | M2 | `data/policy.json`, `ItemLimit`, `PolicyTable`, `load_policy`, `POLICY_FILE`; both loaders refactored onto `_load_model` | Role entitlements as validated data that fails loudly |
 | 2026-11-23 | M2 | Failing tests for `get_policy_limits` (`test_policy.py`) | TDD red step |
 | 2026-11-23 | M2 | `policy.py`: `normalize_role`, `get_policy_limits`; `ROLES` and `CATALOG_ITEMS` typed with their literals | REQUIREMENTS §7.2 as a pure function, before any MCP wrapping |
+| 2026-11-23 | M2 | Failing integration tests for the `get_policy_limits` tool and `resolved_employee_id` logging; `server_log` fixture moved to `conftest.py` | TDD red step |
 
 ## 7. Known issues and fixes
 

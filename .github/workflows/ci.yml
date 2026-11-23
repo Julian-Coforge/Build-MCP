@@ -29,11 +29,13 @@ jobs:
         run: ruff check .
       - name: Type check
         run: mypy
+      # Coverage is measured across both test layers and checked once, at the end.
+      # server.py is only exercised by integration tests, so a 90% check on unit tests
+      # alone would fail wrongly. The unit step disables the threshold; the integration
+      # step appends to the same data and applies fail_under = 90 from pyproject.toml.
       - name: Unit tests
-        run: pytest tests/unit --cov --cov-report=term-missing
+        run: pytest tests/unit --cov --cov-fail-under=0
       - name: Integration tests
-        # pytest exits 5 when it collects no tests. Integration tests arrive in M4;
-        # until then "no tests" is accepted, but any real failure still fails CI.
-        run: pytest tests/integration || [ $? -eq 5 ]
+        run: pytest tests/integration --cov --cov-append --cov-report=term-missing
       - name: Dependency audit
         run: pip-audit --skip-editable

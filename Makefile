@@ -1,6 +1,6 @@
 # Run from an activated virtualenv (source .venv/bin/activate).
 # `make check` runs the same steps as CI, in the same fast-to-slow order.
-.PHONY: install format lint type test audit check
+.PHONY: install format lint type test audit check serve client-demo
 
 install:
 	python -m pip install -e ".[dev]"
@@ -22,3 +22,11 @@ audit:
 	pip-audit --skip-editable
 
 check: lint type test audit
+
+# Start the MCP server on http://127.0.0.1:8000/mcp (blocks; stop with Ctrl+C).
+serve:
+	python -m it_requests.server
+
+# Call the running server over HTTP. Run `make serve` in another terminal first.
+client-demo:
+	python scripts/client_demo.py

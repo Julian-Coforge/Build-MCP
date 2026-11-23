@@ -1,0 +1,33 @@
+{
+  "data_version": "employees-v1",
+  "effective_date": "2026-11-22",
+  "employees": [
+    {"employee_id": "E1001", "name": "Priya Shah", "role": "standard", "hire_date": "2021-06-14", "status": "active",
+     "equipment": [
+       {"item": "laptop", "asset_id": "LT-2291", "issued_date": "2025-03-10"},
+       {"item": "monitor", "asset_id": "MN-1001", "issued_date": "2021-06-14"},
+       {"item": "keyboard_mouse", "asset_id": "KM-1001", "issued_date": "2021-06-14"}]},
+    {"employee_id": "E1002", "name": "Marcus Lee", "role": "engineer", "hire_date": "2022-01-10", "status": "active",
+     "equipment": [
+       {"item": "laptop", "asset_id": "LT-1876", "issued_date": "2024-02-05"},
+       {"item": "monitor", "asset_id": "MN-1002", "issued_date": "2022-01-10"},
+       {"item": "docking_station", "asset_id": "DK-1002", "issued_date": "2022-01-10"}]},
+    {"employee_id": "E1003", "name": "Dana Okafor", "role": "manager", "hire_date": "2019-09-03", "status": "active",
+     "equipment": [
+       {"item": "laptop", "asset_id": "LT-2410", "issued_date": "2025-08-18"},
+       {"item": "monitor", "asset_id": "MN-1031", "issued_date": "2023-04-11"},
+       {"item": "monitor", "asset_id": "MN-1032", "issued_date": "2023-04-11"},
+       {"item": "mobile_phone", "asset_id": "PH-1003", "issued_date": "2025-01-20"}]},
+    {"employee_id": "E1004", "name": "Sam Rivera", "role": "contractor", "hire_date": "2026-07-01", "status": "active",
+     "equipment": [
+       {"item": "headset", "asset_id": "HS-1004", "issued_date": "2026-07-01"}]},
+    {"employee_id": "E1005", "name": "Alex Chen", "role": "standard", "hire_date": "2020-02-17", "status": "active",
+     "equipment": [
+       {"item": "laptop", "asset_id": "LT-1650", "issued_date": "2022-10-03"},
+       {"item": "monitor", "asset_id": "MN-1005", "issued_date": "2020-02-17"}]},
+    {"employee_id": "E1006", "name": "Jordan Park", "role": "engineer", "hire_date": "2023-05-22", "status": "on_leave",
+     "equipment": [
+       {"item": "laptop", "asset_id": "LT-2350", "issued_date": "2025-05-22"},
+       {"item": "monitor", "asset_id": "MN-1006", "issued_date": "2023-05-22"}]}
+  ]
+}

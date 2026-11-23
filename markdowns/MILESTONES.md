@@ -3,7 +3,7 @@
 > Where the project is right now. Updated as each item is finished.
 > Details for each milestone are in `PLAN.md` §13; what the code does is in `codebase.md`.
 
-**Current stage:** M0 done (PR #1, CI green, waiting for you to merge). Next: **M1**.
+**Current stage:** M1 verified, waiting for you to push and merge the PR. Next: **M2**.
 **Due:** 2026-11-26 · **LLM spend so far:** $0.00 of the $5 budget (code gate at $4.00)
 
 Legend: `[x]` done · `[ ]` not done · 📸 = screenshot for the submission PDF (number = deliverable order)
@@ -17,17 +17,18 @@ Legend: `[x]` done · `[ ]` not done · 📸 = screenshot for the submission PDF
 - [x] GitHub Actions CI (format, lint, types, tests, audit), first run green
 - [x] REQUIREMENTS v1.1 fixes
 - [x] `codebase.md` started
-- [ ] PR #1 merged *(yours)*
+- [x] PR #1 merged *(yours)*
 
-## M1: `get_employee_info` end to end, plus JSON logging (brief steps 1 to 3)
-- [ ] Step-1 demo moved to `examples/step1/`
-- [ ] Mock data file `data/employees.json`, with validation tests (duplicates, bad dates, unknown roles fail loudly)
-- [ ] Unit tests for `get_employee_info`: normal case, unknown ID, bad format, lower-case and whitespace input
-- [ ] Plain function passes the tests
-- [ ] JSON logging module, with tests
-- [ ] Wrapped as an MCP tool on the real server
-- [ ] `scripts/client_demo.py` calls it over HTTP and gets a real response
-- [ ] 📸 **#2** Terminal output: server running, plus the client getting a real `get_employee_info` response
+## M1: `get_employee_info` end to end, plus JSON logging (brief steps 1 to 3) ✅
+- [x] Step-1 demo moved to `examples/step1/`
+- [x] Mock data file `data/employees.json`, with validation tests (duplicates, bad dates, unknown roles fail loudly)
+- [x] Unit tests for `get_employee_info`: normal case, unknown ID, bad format, lower-case and whitespace input
+- [x] Plain function passes the tests
+- [x] JSON logging module, with tests
+- [x] Wrapped as an MCP tool on the real server
+- [x] `scripts/client_demo.py` calls it over HTTP and gets a real response
+- [x] 📸 **#2** Terminal output: server running, plus the client getting a real `get_employee_info` response
+- [ ] M1 PR pushed, CI green and merged *(yours)*
 
 ## M2: `get_policy_limits` (brief step 4)
 - [ ] `data/policy.json`, with validation tests

@@ -10,6 +10,9 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "mcp==2.3.0",
+    # Imported directly by it_requests.data for the data models. Declared explicitly so we
+    # don't rely on it arriving only as a dependency of mcp.
+    "pydantic>=2.14,<3",
 ]
 
 [project.optional-dependencies]

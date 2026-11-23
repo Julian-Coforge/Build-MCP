@@ -117,6 +117,11 @@ def _hire_after_effective_date(d: dict[str, Any]) -> None:
     d["employees"][0]["hire_date"] = "2026-11-23"
 
 
+def _issued_after_effective_date(d: dict[str, Any]) -> None:
+    # Hire date stays valid, so only the equipment-date check can catch this.
+    d["employees"][0]["equipment"][0]["issued_date"] = "2026-11-23"
+
+
 def _unknown_extra_field(d: dict[str, Any]) -> None:
     d["employees"][0]["salary"] = 100000
 
@@ -137,6 +142,7 @@ def _missing_employees_key(d: dict[str, Any]) -> None:
         _impossible_date,
         _issued_before_hire,
         _hire_after_effective_date,
+        _issued_after_effective_date,
         _unknown_extra_field,
         _missing_employees_key,
     ],

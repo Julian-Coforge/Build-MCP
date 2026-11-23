@@ -16,3 +16,4 @@ REFERENCE_DATE: date = date(2026, 11, 22)
 # scripts find the same files wherever they are launched from.
 DATA_DIR: Path = Path(__file__).resolve().parents[2] / "data"
 EMPLOYEES_FILE: Path = DATA_DIR / "employees.json"
+POLICY_FILE: Path = DATA_DIR / "policy.json"

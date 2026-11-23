@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-23, milestone M1, verified (mock employee data, `get_employee_info` as a pure function, JSON logging, MCP server with `get_employee_info`)
+**Last updated:** 2026-11-23, milestone M2 (policy data, `get_policy_limits` as a pure function and as the second MCP tool). M1 is verified.
 
 ---
 
@@ -17,17 +17,19 @@ Policy decisions are made by plain, tested Python functions. The LLM only interp
 
 ## 2. Current state
 
-M0 is done. In M1, the mock employee data, its validating loader and `get_employee_info` exist as plain functions with tests, as does the JSON logging module. The real MCP server exposes one tool, `get_employee_info`, over streamable HTTP, and `scripts/client_demo.py` calls it. The other three tools come in M2 to M4.
+M0 is done. In M1, the mock employee data, its validating loader and `get_employee_info` exist as plain functions with tests, as does the JSON logging module. The real MCP server exposes one tool, `get_employee_info`, over streamable HTTP, and `scripts/client_demo.py` calls it. In M2, the role-entitlement policy (`data/policy.json`) and its validating loader exist with tests, as does `get_policy_limits`, as a pure function and as the server's second MCP tool. The other two tools come in M3 and M4.
 
 | File | What it does | Status |
 |---|---|---|
-| `src/it_requests/config.py` | `REFERENCE_DATE = 2026-11-22`, the fixed "today" for every policy check. `DATA_DIR` and `EMPLOYEES_FILE`, resolved from the file's own location. | Tested |
+| `src/it_requests/config.py` | `REFERENCE_DATE = 2026-11-22`, the fixed "today" for every policy check. `DATA_DIR`, `EMPLOYEES_FILE` and `POLICY_FILE`, resolved from the file's own location. | Tested |
 | `data/employees.json` | The six employees from REQUIREMENTS §8, with fixed asset IDs. Top-level `data_version` (`employees-v1`) and `effective_date` (`2026-11-22`). | Tested (loads and validates) |
-| `src/it_requests/data.py` | Pydantic models (`EquipmentItem`, `Employee`, `EmployeeDirectory`), the `Role`, `Status` and `CatalogItem` literals, the `ROLES` and `CATALOG_ITEMS` tuples, `EMPLOYEE_ID_PATTERN`, `DataValidationError` and `load_employees(path)`. | Tested, 100% coverage |
+| `data/policy.json` | The role-entitlement matrix from REQUIREMENTS §4.1: 4 roles × 6 items, each with `max` and `refresh_months`. Top-level `data_version` (`policy-v1`) and `effective_date`. | Tested (loads and validates) |
+| `src/it_requests/data.py` | Pydantic models (`EquipmentItem`, `Employee`, `EmployeeDirectory`), the `Role`, `Status` and `CatalogItem` literals, the `ROLES` and `CATALOG_ITEMS` tuples, `EMPLOYEE_ID_PATTERN`, `DataValidationError` and `load_employees(path)`. Policy models (`ItemLimit`, `PolicyTable`) and `load_policy(path)`. | Tested, 100% coverage |
 | `src/it_requests/employees.py` | `normalize_employee_id`, `tenure_months` and `get_employee_info`: the pure function behind the MCP tool (REQUIREMENTS §7.1). | Tested, 100% coverage |
+| `src/it_requests/policy.py` | `normalize_role` and `get_policy_limits`: the pure function behind the MCP tool (REQUIREMENTS §7.2). | Tested, 100% coverage |
 | `src/it_requests/observability.py` | `request_id_var`, `REDACTED_KEYS`, `JsonFormatter`, `log_event` and `configure_logging`: structured JSON logging for the server and, later, the agent (PLAN §5). | Tested, 100% coverage; used by `server.py` |
-| `src/it_requests/server.py` | `build_server(directory, *, as_of)` registers the `get_employee_info` tool as a thin wrapper that logs one `tool.call` event. `main()` configures logging, loads the data, logs `server.start` and serves on `http://127.0.0.1:8000/mcp`. | Integration-tested in-process; `main()` checked by hand |
-| `scripts/client_demo.py` | Connects over HTTP, lists the tools, and calls `get_employee_info` for `E1001`, `" e1001 "` and `E9999` (screenshot for deliverable #2). | Checked by hand |
+| `src/it_requests/server.py` | `build_server(directory, policy_table, *, as_of)` registers the `get_employee_info` and `get_policy_limits` tools as thin wrappers. Both log through one helper, `_call_and_log`. `main()` configures logging, loads both data files, logs `server.start` and serves on `http://127.0.0.1:8000/mcp`. | Integration-tested in-process; `main()` checked by hand |
+| `scripts/client_demo.py` | Connects over HTTP, lists the tools, calls `get_employee_info` for `E1001`, `" e1001 "` and `E9999`, then calls `get_policy_limits` for `standard`, `Manager` and `intern` (screenshot for deliverable #2). | Checked by hand |
 | `examples/step1/server.py`, `client.py` | Brief step 1: a minimal "Demo" MCP server with a trivial `get_employee_id` tool, plus a client that calls it. | Kept unchanged as submission evidence |
 
 ### `data.py` in detail
@@ -40,7 +42,15 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
   - no `issued_date` before that employee's `hire_date`
   - no `hire_date` or `issued_date` after `effective_date`
 - **`EmployeeDirectory.get(employee_id)`:** exact match only. It returns `None` when the ID is not found.
-- **`load_employees(path)`:** a missing or unreadable file, malformed JSON and any validation failure all raise `DataValidationError`. The message names the file path, and the original error is chained (`from err`).
+- **Loaders:** `load_employees(path)` and `load_policy(path)` both call one private helper, `_load_model(path, model, what)`. A missing or unreadable file, malformed JSON and any validation failure all raise `DataValidationError`. The message names the file path, and the original error is chained (`from err`).
+- **`ItemLimit`:** has two fields, `max` and `refresh_months`.
+  - `max` is an int of 0 or more.
+  - `refresh_months` is a positive int (the refresh interval), `"none"` (entitled, but no refresh cycle: R-LIMIT) or `None` (not entitled: R-ROLE).
+  - A `model_validator` enforces the v1.1 pairing: `max == 0` requires `None`, and `max > 0` requires a positive int or `"none"`, never `None`.
+- **`PolicyTable`:**
+  - Fields: `data_version`, `effective_date` and `roles: dict[Role, dict[CatalogItem, ItemLimit]]`.
+  - The literal key types reject unknown roles and items. A `model_validator` rejects missing ones, and its error names the missing role or item.
+  - `limits_for(role)` returns a copy of that role's limits.
 
 ### `employees.py` in detail
 
@@ -51,6 +61,14 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
   - **Bad format:** returns `{"error": "INVALID_EMPLOYEE_ID", "employee_id": <raw input>}`.
   - **Valid format, unknown ID:** returns `{"error": "EMPLOYEE_NOT_FOUND", "employee_id": <normalised ID>}`.
   - **Status:** reported as it is, not judged. `on_leave` is a normal success, because judging status is the eligibility tool's job.
+
+### `policy.py` in detail
+
+- **`normalize_role(raw)`:** strips whitespace and lower-cases. Returns the matching role from `ROLES`, typed as `Role`, or `None` if there is no match.
+- **`get_policy_limits(role, *, policy)`:**
+  - **Success:** returns `{"role", "limits", "data_version"}`. `limits` has all six items in `CATALOG_ITEMS` order, each as `{"max", "refresh_months"}`.
+  - **`refresh_months`:** passed through unchanged: an int, `"none"` or `None`, which becomes `null` in JSON.
+  - **Unknown role:** returns `{"error": "UNKNOWN_ROLE", "role": <raw input>}`.
 
 ### `observability.py` in detail
 
@@ -69,15 +87,19 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 
 ### `server.py` in detail
 
-- **`build_server(directory, *, as_of=REFERENCE_DATE)`:** a factory. Tests inject their own data, and importing the module never reads files or opens ports.
+- **`build_server(directory, policy_table, *, as_of=REFERENCE_DATE)`:** a factory. Tests inject their own data, and importing the module never reads files or opens ports. The parameter is called `policy_table` because `policy` is the module name.
+- **`_call_and_log(tool, call, *, data_version, inputs, result_fields)`:** the one helper both tools use.
+  - Times the call and logs one `tool.call` event, then returns the result unchanged, including error dicts. `is_error` therefore stays `False` for tool errors.
+  - The event fields are `tool`, the inputs, any result-derived fields, `status` (`ok` or the error code), `data_version` and `duration_ms`.
 - **The `get_employee_info` tool:**
-  - Calls `employees.get_employee_info` and returns its dict unchanged, including error dicts. `is_error` therefore stays `False` for `EMPLOYEE_NOT_FOUND`.
-  - Logs one `tool.call` event with `tool`, `employee_id` (the raw input), `status` (`ok` or the error code), `data_version` and `duration_ms`.
+  - Logs `employee_id`, the raw input exactly as sent.
+  - Logs `resolved_employee_id`: the normalised ID on success, or `null` on any error.
   - Never logs the employee's name.
-- **The tool description:** the function's docstring, word for word REQUIREMENTS §7.1.
+- **The `get_policy_limits` tool:** logs `role`, the raw input, and `data_version` `policy-v1`.
+- **Tool descriptions:** each tool's docstring, word for word from REQUIREMENTS §7.1 and §7.2.
 - **`main()`:**
-  - Configures logging, to stderr and `logs/app.jsonl`, and loads `data/employees.json`.
-  - Logs `server.start`, with `data_version`, `employee_count`, `host` and `port`.
+  - Configures logging, to stderr and `logs/app.jsonl`, and loads `data/employees.json` and `data/policy.json`.
+  - Logs `server.start`, with `data_version`, `policy_version`, `employee_count`, `host` and `port`.
   - Runs streamable HTTP on `127.0.0.1:8000`.
 - **Ways to start it:** `make serve`, `python -m it_requests.server` or the installed `it-requests-server` command.
 
@@ -87,17 +109,19 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 Build-MCP/
 ├── src/it_requests/        # the installable package (all business logic lives here)
 │   ├── __init__.py
-│   ├── config.py           # shared constants (REFERENCE_DATE, DATA_DIR, EMPLOYEES_FILE)
-│   ├── data.py             # Pydantic data models and load_employees
+│   ├── config.py           # shared constants (REFERENCE_DATE, DATA_DIR, EMPLOYEES_FILE, POLICY_FILE)
+│   ├── data.py             # Pydantic data models, load_employees and load_policy
 │   ├── employees.py        # get_employee_info and its helpers (pure)
+│   ├── policy.py           # get_policy_limits and normalize_role (pure)
 │   ├── observability.py    # JSON logging: log_event, configure_logging
 │   ├── server.py           # MCP server: build_server (thin tool wrappers) and main
 │   └── py.typed            # marks the package as typed for mypy
 ├── data/
-│   └── employees.json      # mock employees (REQUIREMENTS §8)
+│   ├── employees.json      # mock employees (REQUIREMENTS §8)
+│   └── policy.json         # role entitlements (REQUIREMENTS §4.1)
 ├── tests/
-│   ├── unit/               # test_config, test_data, test_employees, test_observability
-│   └── integration/        # conftest (server fixture), test_server_employee_tool
+│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_observability
+│   └── integration/        # conftest (server, server_log), test_server_employee_tool, test_server_policy_tool
 ├── scripts/
 │   └── client_demo.py      # calls the running server over HTTP
 ├── examples/step1/         # brief step-1 demo (do not modify)
@@ -140,7 +164,7 @@ get_employee_info(" e1001 ", directory=directory)  # E1001's record, tenure_mont
 **MCP server and demo client** (two terminals):
 ```bash
 make serve          # terminal 1: serves on http://127.0.0.1:8000/mcp, logs to stderr and logs/app.jsonl
-make client-demo    # terminal 2: lists tools, calls get_employee_info for E1001, " e1001 " and E9999
+make client-demo    # terminal 2: lists tools, calls get_employee_info and get_policy_limits
 ```
 
 **Step-1 demo server and client:**
@@ -246,6 +270,30 @@ Each entry: the decision, and why.
 31. **`duration_ms` uses `time.perf_counter()`.**
     *Why:* it is monotonic, so a system clock change can't produce a negative or wrong duration.
 
+32. **The `max`/`refresh_months` pairing is enforced in `ItemLimit`'s validator.**
+    *Why:* the eligibility logic relies on `null` meaning "not entitled" and `"none"` meaning "no refresh cycle" (REQUIREMENTS §7.2, v1.1). A contradictory pair, such as max 0 with refresh 24, would otherwise load fine and give a wrong decision later.
+
+33. **The policy must be complete: every role defines every catalog item.**
+    *Why:* a gap would leave the eligibility check with no rule to apply. It is caught at load, not at request time.
+
+34. **Both loaders share one helper, `_load_model`.**
+    *Why:* the error handling exists once, so every data file fails the same way. A fix in the helper applies to all loaders. It was added as a refactor after the tests were green, and the existing `load_employees` tests passed unchanged.
+
+35. **`limits_for` returns a copy of the role's limits.**
+    *Why:* `frozen=True` stops fields being reassigned, but a dict inside a model can still be changed. The copy keeps the shared table safe from callers.
+
+36. **`ROLES` and `CATALOG_ITEMS` are typed `tuple[Role, ...]` and `tuple[CatalogItem, ...]`, not `tuple[str, ...]`.**
+    *Why:* code that loops over them gets `Role` and `CatalogItem` values. mypy then accepts them as dict keys and return values without a `cast`, which `normalize_role` and `get_policy_limits` rely on.
+
+37. **`get_policy_limits` builds `limits` in `CATALOG_ITEMS` order and passes `refresh_months` through unchanged.**
+    *Why:* the output is the same on every call. `"none"` (R-LIMIT) and `null` (R-ROLE) stay distinct, so the model never has to infer entitlement from `max` (REQUIREMENTS §7.2).
+
+38. **Every tool logs through one helper, `_call_and_log`.**
+    *Why:* each wrapper stays a few lines, and the `tool.call` shape can't drift between tools. It was added as a refactor after the tests were green. Result-dependent fields, such as `resolved_employee_id`, come in through a `result_fields` callback, so the helper stays generic.
+
+39. **`get_employee_info` logs both the raw `employee_id` and `resolved_employee_id`.**
+    *Why:* the raw value shows exactly what the agent sent, including a bad ID. The resolved value lets one `jq` query find every lookup of an employee, however messy the input was. It is `null` on any error, never a guess.
+
 ## 6. Change log
 
 | Date | Milestone | Change | Why |
@@ -266,6 +314,12 @@ Each entry: the decision, and why.
 | 2026-11-23 | M1 | `observability.py`: `JsonFormatter`, `log_event`, `configure_logging`, `request_id_var`, redaction | One structured logging path for the server and agent (PLAN §5) |
 | 2026-11-23 | M1 | Failing integration tests for the `get_employee_info` MCP tool (`tests/integration/`) | TDD red step |
 | 2026-11-23 | M1 | `server.py` (`build_server`, `main`), `scripts/client_demo.py`, `it-requests-server` script, `make serve` / `make client-demo`, CI coverage across both layers; `tests/integration/.gitkeep` removed | `get_employee_info` exposed over MCP and proven end to end over HTTP |
+| 2026-11-23 | M2 | Failing tests for the policy data file and loader (`test_policy_data.py`) | TDD red step |
+| 2026-11-23 | M2 | `data/policy.json`, `ItemLimit`, `PolicyTable`, `load_policy`, `POLICY_FILE`; both loaders refactored onto `_load_model` | Role entitlements as validated data that fails loudly |
+| 2026-11-23 | M2 | Failing tests for `get_policy_limits` (`test_policy.py`) | TDD red step |
+| 2026-11-23 | M2 | `policy.py`: `normalize_role`, `get_policy_limits`; `ROLES` and `CATALOG_ITEMS` typed with their literals | REQUIREMENTS §7.2 as a pure function, before any MCP wrapping |
+| 2026-11-23 | M2 | Failing integration tests for the `get_policy_limits` tool and `resolved_employee_id` logging; `server_log` fixture moved to `conftest.py` | TDD red step |
+| 2026-11-23 | M2 | `get_policy_limits` MCP tool; `resolved_employee_id` in `get_employee_info` logs; shared `_call_and_log` helper; `policy_version` in `server.start`; client demo calls the policy tool | Second tool exposed over MCP and proven end to end over HTTP |
 
 ## 7. Known issues and fixes
 

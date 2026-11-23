@@ -6,14 +6,15 @@ event, so the protocol layer can't drift from the rules the unit tests pin down.
 
 import logging
 import time
+from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 from mcp.server import MCPServer
 
-from it_requests import config, employees
-from it_requests.data import EmployeeDirectory, load_employees
+from it_requests import config, employees, policy
+from it_requests.data import EmployeeDirectory, PolicyTable, load_employees, load_policy
 from it_requests.observability import configure_logging, log_event
 
 HOST = "127.0.0.1"  # Loopback only: the mock server must never be reachable from the network.
@@ -21,8 +22,53 @@ PORT = 8000
 
 logger = logging.getLogger("server")
 
+ToolResult = dict[str, Any]
 
-def build_server(directory: EmployeeDirectory, *, as_of: date = config.REFERENCE_DATE) -> MCPServer:
+
+def _no_extra_fields(_result: ToolResult) -> dict[str, Any]:
+    return {}
+
+
+def _call_and_log(
+    tool: str,
+    call: Callable[[], ToolResult],
+    *,
+    data_version: str,
+    inputs: dict[str, Any],
+    result_fields: Callable[[ToolResult], dict[str, Any]] = _no_extra_fields,
+) -> ToolResult:
+    """Run one tool call, log one tool.call event, and return the result unchanged.
+
+    One helper for every tool, so each wrapper stays a few lines and the log shape (tool,
+    inputs, status, data_version, duration_ms) can't drift between tools.
+    `result_fields` adds log fields that depend on the result, such as resolved_employee_id.
+    """
+    start = time.perf_counter()  # perf_counter: monotonic, unaffected by clock changes
+    result = call()
+    log_event(
+        logger,
+        "tool.call",
+        tool=tool,
+        **inputs,
+        **result_fields(result),
+        status=result.get("error", "ok"),
+        data_version=data_version,
+        duration_ms=round((time.perf_counter() - start) * 1000, 3),
+    )
+    return result
+
+
+def _resolved_employee(result: ToolResult) -> dict[str, Any]:
+    # Who the lookup matched: the normalised ID on success, None on any error (never a guess).
+    return {"resolved_employee_id": None if "error" in result else result["employee_id"]}
+
+
+def build_server(
+    directory: EmployeeDirectory,
+    policy_table: PolicyTable,
+    *,
+    as_of: date = config.REFERENCE_DATE,
+) -> MCPServer:
     """Build the server around injected data.
 
     A factory, not a module-level server: tests pass in their own data, and importing this
@@ -37,36 +83,46 @@ def build_server(directory: EmployeeDirectory, *, as_of: date = config.REFERENCE
         """Look up an employee's role, hire date, tenure, employment status, and the equipment currently issued to them. Use this first for any request about a specific employee."""  # noqa: E501
         # One line on purpose: the docstring is the tool description the model sees, and it
         # must equal REQUIREMENTS §7.1 exactly. A wrapped docstring would add line breaks.
-        start = time.perf_counter()  # perf_counter: monotonic, unaffected by clock changes
-        result = employees.get_employee_info(employee_id, directory=directory, as_of=as_of)
-        log_event(
-            logger,
-            "tool.call",
-            tool="get_employee_info",
-            employee_id=employee_id,  # the raw input, so a bad ID can be seen in the logs
-            status=result.get("error", "ok"),
+        return _call_and_log(
+            "get_employee_info",
+            lambda: employees.get_employee_info(employee_id, directory=directory, as_of=as_of),
             data_version=directory.data_version,
-            duration_ms=round((time.perf_counter() - start) * 1000, 3),
-        )  # no name field: employee names are never logged (CLAUDE.md)
-        return result
+            # The raw input, so a bad ID stays visible exactly as sent. No name field:
+            # employee names are never logged (CLAUDE.md).
+            inputs={"employee_id": employee_id},
+            result_fields=_resolved_employee,
+        )
+
+    @server.tool()
+    def get_policy_limits(role: str) -> dict[str, Any]:
+        """Return the equipment a role is entitled to, the maximum units per item, and the refresh interval in months. Use this to explain a decision or a denial."""  # noqa: E501
+        # One line on purpose, as above: must equal REQUIREMENTS §7.2 exactly.
+        return _call_and_log(
+            "get_policy_limits",
+            lambda: policy.get_policy_limits(role, policy=policy_table),
+            data_version=policy_table.data_version,
+            inputs={"role": role},
+        )
 
     return server
 
 
 def main() -> None:  # pragma: no cover
     # Not unit-tested: it starts a blocking network server. Everything it calls
-    # (configure_logging, load_employees, build_server) is tested separately.
+    # (configure_logging, the loaders, build_server) is tested separately.
     configure_logging("server", log_file=Path("logs/app.jsonl"))
     directory = load_employees(config.EMPLOYEES_FILE)
+    policy_table = load_policy(config.POLICY_FILE)
     log_event(
         logger,
         "server.start",
         data_version=directory.data_version,
+        policy_version=policy_table.data_version,
         employee_count=len(directory.employees),
         host=HOST,
         port=PORT,
     )
-    build_server(directory).run(transport="streamable-http", host=HOST, port=PORT)
+    build_server(directory, policy_table).run(transport="streamable-http", host=HOST, port=PORT)
 
 
 if __name__ == "__main__":  # pragma: no cover

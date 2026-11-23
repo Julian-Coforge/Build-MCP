@@ -1,0 +1,38 @@
+{
+  "data_version": "policy-v1",
+  "effective_date": "2026-11-22",
+  "roles": {
+    "standard": {
+      "laptop":          {"max": 1, "refresh_months": 36},
+      "monitor":         {"max": 1, "refresh_months": 36},
+      "docking_station": {"max": 1, "refresh_months": "none"},
+      "headset":         {"max": 1, "refresh_months": 24},
+      "keyboard_mouse":  {"max": 1, "refresh_months": 24},
+      "mobile_phone":    {"max": 0, "refresh_months": null}
+    },
+    "engineer": {
+      "laptop":          {"max": 1, "refresh_months": 24},
+      "monitor":         {"max": 2, "refresh_months": 36},
+      "docking_station": {"max": 1, "refresh_months": "none"},
+      "headset":         {"max": 1, "refresh_months": 24},
+      "keyboard_mouse":  {"max": 1, "refresh_months": 24},
+      "mobile_phone":    {"max": 0, "refresh_months": null}
+    },
+    "manager": {
+      "laptop":          {"max": 1, "refresh_months": 24},
+      "monitor":         {"max": 2, "refresh_months": 36},
+      "docking_station": {"max": 1, "refresh_months": "none"},
+      "headset":         {"max": 1, "refresh_months": 24},
+      "keyboard_mouse":  {"max": 1, "refresh_months": 24},
+      "mobile_phone":    {"max": 1, "refresh_months": 24}
+    },
+    "contractor": {
+      "laptop":          {"max": 0, "refresh_months": null},
+      "monitor":         {"max": 0, "refresh_months": null},
+      "docking_station": {"max": 0, "refresh_months": null},
+      "headset":         {"max": 1, "refresh_months": 24},
+      "keyboard_mouse":  {"max": 1, "refresh_months": 24},
+      "mobile_phone":    {"max": 0, "refresh_months": null}
+    }
+  }
+}

@@ -13,6 +13,9 @@ SERVER_URL = "http://127.0.0.1:8000/mcp"
 # A normal ID, a messy ID that must normalise, and an unknown ID that returns an error as data.
 REQUESTS = ["E1001", " e1001 ", "E9999"]
 
+# A plain role, a mixed-case role (lookup is case-insensitive) and an unknown role.
+ROLE_REQUESTS = ["standard", "Manager", "intern"]
+
 
 def heading(text: str) -> None:
     print(f"\n{'=' * 60}\n{text}\n{'=' * 60}")
@@ -28,6 +31,11 @@ async def main() -> None:
             # repr() shows the spaces in " e1001 ", so the normalisation is visible.
             heading(f"get_employee_info(employee_id={employee_id!r})")
             result = await client.call_tool("get_employee_info", {"employee_id": employee_id})
+            print(json.dumps(result.structured_content, indent=2))
+
+        for role in ROLE_REQUESTS:
+            heading(f"get_policy_limits(role={role!r})")
+            result = await client.call_tool("get_policy_limits", {"role": role})
             print(json.dumps(result.structured_content, indent=2))
 
 

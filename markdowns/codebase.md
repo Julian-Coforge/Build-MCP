@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-23, milestone M1 (mock employee data and `get_employee_info` as a pure function)
+**Last updated:** 2026-11-23, milestone M1 (mock employee data, `get_employee_info` as a pure function, JSON logging)
 
 ---
 
@@ -17,7 +17,7 @@ Policy decisions are made by plain, tested Python functions. The LLM only interp
 
 ## 2. Current state
 
-M0 is done. In M1, the mock employee data, its validating loader and `get_employee_info` exist as plain functions with tests. Nothing is exposed over MCP yet. JSON logging and the MCP tool wrapper come next.
+M0 is done. In M1, the mock employee data, its validating loader and `get_employee_info` exist as plain functions with tests, as does the JSON logging module. Nothing is exposed over MCP yet. The MCP tool wrapper comes next.
 
 | File | What it does | Status |
 |---|---|---|
@@ -25,6 +25,7 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 | `data/employees.json` | The six employees from REQUIREMENTS §8, with fixed asset IDs. Top-level `data_version` (`employees-v1`) and `effective_date` (`2026-11-22`). | Tested (loads and validates) |
 | `src/it_requests/data.py` | Pydantic models (`EquipmentItem`, `Employee`, `EmployeeDirectory`), the `Role`, `Status` and `CatalogItem` literals, the `ROLES` and `CATALOG_ITEMS` tuples, `EMPLOYEE_ID_PATTERN`, `DataValidationError` and `load_employees(path)`. | Tested, 100% coverage |
 | `src/it_requests/employees.py` | `normalize_employee_id`, `tenure_months` and `get_employee_info`: the pure function behind the future MCP tool (REQUIREMENTS §7.1). | Tested, 100% coverage |
+| `src/it_requests/observability.py` | `request_id_var`, `REDACTED_KEYS`, `JsonFormatter`, `log_event` and `configure_logging`: structured JSON logging for the server and, later, the agent (PLAN §5). | Tested, 100% coverage; not yet called by any component |
 | `examples/step1/server.py`, `client.py` | Brief step 1: a minimal "Demo" MCP server with a trivial `get_employee_id` tool, plus a client that calls it. | Kept unchanged as submission evidence |
 
 ### `data.py` in detail
@@ -49,6 +50,21 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
   - **Valid format, unknown ID:** returns `{"error": "EMPLOYEE_NOT_FOUND", "employee_id": <normalised ID>}`.
   - **Status:** reported as it is, not judged. `on_leave` is a normal success, because judging status is the eligibility tool's job.
 
+### `observability.py` in detail
+
+- **`log_event(logger, event, level=INFO, **fields)`:** the one helper every call site uses. It passes `fields` to the formatter through `extra={"fields": ...}`.
+- **`JsonFormatter`:** writes each record as one line of JSON.
+  - **Standard keys:** `ts`, `level`, `component` and `event`, plus `request_id`, which is taken from `request_id_var`. `ts` is UTC ISO-8601 with milliseconds and a `Z`, for example `2026-11-23T10:15:02.123Z`.
+  - **Custom fields:** written after redaction. The standard keys are applied last, so a custom field can't overwrite them.
+  - **Exceptions:** add `exc_type` and `exc_message`, with no traceback, so each record stays on one line.
+  - **Non-JSON values:** dates and other values that JSON can't hold are written as strings (`json.dumps(default=str)`).
+- **Redaction:** any field whose key matches `REDACTED_KEYS` (`name`, `api_key`, `authorization`, `password`, `token`), ignoring case, is written as `"[REDACTED]"`.
+- **`configure_logging(component, *, log_file=None, level=INFO)`:**
+  - Returns the named logger, writing to stderr, and also to `log_file` if one is given. Parent folders are created.
+  - It closes and replaces existing handlers, so calling it twice never duplicates log lines.
+  - Sets `propagate = False`.
+- **Not yet included:** `trace_id` and `span_id` (PLAN §5). They arrive with tracing in M5.
+
 ## 3. Layout
 
 ```
@@ -58,11 +74,12 @@ Build-MCP/
 │   ├── config.py           # shared constants (REFERENCE_DATE, DATA_DIR, EMPLOYEES_FILE)
 │   ├── data.py             # Pydantic data models and load_employees
 │   ├── employees.py        # get_employee_info and its helpers (pure)
+│   ├── observability.py    # JSON logging: log_event, configure_logging
 │   └── py.typed            # marks the package as typed for mypy
 ├── data/
 │   └── employees.json      # mock employees (REQUIREMENTS §8)
 ├── tests/
-│   ├── unit/               # test_config.py, test_data.py, test_employees.py
+│   ├── unit/               # test_config, test_data, test_employees, test_observability
 │   └── integration/        # tools through MCP, agent loop with a fake LLM (from M4)
 ├── examples/step1/         # brief step-1 demo (do not modify)
 ├── markdowns/              # REQUIREMENTS, PLAN, codebase, MILESTONES, prompts/
@@ -98,7 +115,7 @@ from it_requests.data import load_employees
 from it_requests.employees import get_employee_info
 
 directory = load_employees(config.EMPLOYEES_FILE)
-get_employee_info(" e1001 ", directory=directory)   # E1001's record, tenure_months 65
+get_employee_info(" e1001 ", directory=directory)  # E1001's record, tenure_months 65
 ```
 
 **Step-1 demo server and client:**
@@ -168,6 +185,21 @@ Each entry: the decision, and why.
 19. **`pydantic>=2.14,<3` is declared as a direct dependency.**
     *Why:* `data.py` imports it directly. Relying on it arriving only as a dependency of `mcp` would break if `mcp` ever dropped or changed it.
 
+20. **Logging uses the standard library only, with one JSON object per line.**
+    *Why:* no new dependency, and logs can be searched with `grep` or `jq` (PLAN §5).
+
+21. **`request_id` lives in a `ContextVar`, not a global.**
+    *Why:* each asyncio task sees its own value, so two MCP requests handled at the same time never log each other's ID.
+
+22. **Redaction happens in the formatter, and ignores the case of the key.**
+    *Why:* one place to enforce "never log names or secrets". A call site can't forget it, and `Authorization` can't slip past on spelling alone.
+
+23. **Logs go to stderr, never stdout.**
+    *Why:* an MCP server on the stdio transport uses stdout for protocol messages, so a log line there would corrupt the stream.
+
+24. **`configure_logging` replaces handlers instead of adding to them, and sets `propagate = False`.**
+    *Why:* calling it again (in tests, or on an in-process restart) must not double every line. Propagating to the root logger could print each record a second time in another format.
+
 ## 6. Change log
 
 | Date | Milestone | Change | Why |
@@ -185,6 +217,7 @@ Each entry: the decision, and why.
 | 2026-11-23 | M1 | `employees.py`: `normalize_employee_id`, `tenure_months`, `get_employee_info` | REQUIREMENTS §7.1 as a pure function, before any MCP wrapping |
 | 2026-11-23 | M1 | Shared `EMPLOYEE_ID_PATTERN` restricted to ASCII digits, with a reproduction test | Fix for non-ASCII digits being accepted (see §7) |
 | 2026-11-23 | M1 | Failing tests for JSON logging (`test_observability.py`) | TDD red step |
+| 2026-11-23 | M1 | `observability.py`: `JsonFormatter`, `log_event`, `configure_logging`, `request_id_var`, redaction | One structured logging path for the server and agent (PLAN §5) |
 
 ## 7. Known issues and fixes
 

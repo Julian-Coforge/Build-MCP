@@ -44,6 +44,9 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 # E/F: pycodestyle + pyflakes, I: import order, B: bugbear, UP: modern syntax, SIM: simplifications
 select = ["E", "F", "I", "B", "UP", "SIM"]
+# SIM300 flags `MODULE.CONSTANT == value` as a "Yoda condition" because the name is
+# upper-case; that ordering (actual == expected) is the readable one in tests.
+ignore = ["SIM300"]
 
 [tool.mypy]
 python_version = "3.14"

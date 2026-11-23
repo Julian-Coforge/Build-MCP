@@ -218,6 +218,7 @@ Each entry: the decision, and why.
 | 2026-11-23 | M1 | Shared `EMPLOYEE_ID_PATTERN` restricted to ASCII digits, with a reproduction test | Fix for non-ASCII digits being accepted (see §7) |
 | 2026-11-23 | M1 | Failing tests for JSON logging (`test_observability.py`) | TDD red step |
 | 2026-11-23 | M1 | `observability.py`: `JsonFormatter`, `log_event`, `configure_logging`, `request_id_var`, redaction | One structured logging path for the server and agent (PLAN §5) |
+| 2026-11-23 | M1 | Failing integration tests for the `get_employee_info` MCP tool (`tests/integration/`) | TDD red step |
 
 ## 7. Known issues and fixes
 

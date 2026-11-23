@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environments (machine-specific; never commit)
+.venv/
+venv/
+
+# Secrets: the Anthropic API key lives here
+.env
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Runtime output (logs, traces, cost ledger, review queue)
+logs/
+traces/
+data/review_queue.json
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

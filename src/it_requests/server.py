@@ -13,7 +13,7 @@ from typing import Any
 
 from mcp.server import MCPServer
 
-from it_requests import config, employees, policy
+from it_requests import config, eligibility, employees, policy
 from it_requests.data import EmployeeDirectory, PolicyTable, load_employees, load_policy
 from it_requests.observability import configure_logging, log_event
 
@@ -29,19 +29,33 @@ def _no_extra_fields(_result: ToolResult) -> dict[str, Any]:
     return {}
 
 
+def _ok_or_error(result: ToolResult) -> str:
+    # Default status for lookup tools: "ok", or the error code.
+    return str(result.get("error", "ok"))
+
+
+def _verdict_or_error(result: ToolResult) -> str:
+    # For the eligibility tool, the verdict itself (ELIGIBLE etc.) is logged as status, so a
+    # jq query on status finds every denial or review without reading tool results.
+    # Not the default: get_employee_info's result also has a "status" key (employment status).
+    return str(result.get("error") or result["status"])
+
+
 def _call_and_log(
     tool: str,
     call: Callable[[], ToolResult],
     *,
-    data_version: str,
+    data_version: str | dict[str, str],
     inputs: dict[str, Any],
     result_fields: Callable[[ToolResult], dict[str, Any]] = _no_extra_fields,
+    status_of: Callable[[ToolResult], str] = _ok_or_error,
 ) -> ToolResult:
     """Run one tool call, log one tool.call event, and return the result unchanged.
 
     One helper for every tool, so each wrapper stays a few lines and the log shape (tool,
     inputs, status, data_version, duration_ms) can't drift between tools.
     `result_fields` adds log fields that depend on the result, such as resolved_employee_id.
+    `status_of` decides the logged status; the default is "ok" or the error code.
     """
     start = time.perf_counter()  # perf_counter: monotonic, unaffected by clock changes
     result = call()
@@ -51,7 +65,7 @@ def _call_and_log(
         tool=tool,
         **inputs,
         **result_fields(result),
-        status=result.get("error", "ok"),
+        status=status_of(result),
         data_version=data_version,
         duration_ms=round((time.perf_counter() - start) * 1000, 3),
     )
@@ -61,6 +75,11 @@ def _call_and_log(
 def _resolved_employee(result: ToolResult) -> dict[str, Any]:
     # Who the lookup matched: the normalised ID on success, None on any error (never a guess).
     return {"resolved_employee_id": None if "error" in result else result["employee_id"]}
+
+
+def _eligibility_fields(result: ToolResult) -> dict[str, Any]:
+    # Which employee was checked and which rule decided it; both null on an error.
+    return _resolved_employee(result) | {"rule_id": result.get("rule_id")}
 
 
 def build_server(
@@ -102,6 +121,22 @@ def build_server(
             lambda: policy.get_policy_limits(role, policy=policy_table),
             data_version=policy_table.data_version,
             inputs={"role": role},
+        )
+
+    @server.tool()
+    def check_request_eligibility(employee_id: str, item: str) -> dict[str, Any]:
+        """Decide whether one unit of a catalog item is within policy for this employee. Returns ELIGIBLE, NOT_ELIGIBLE, or NEEDS_REVIEW, with the rule applied. This is the only source of truth for eligibility."""  # noqa: E501
+        # One line on purpose, as above: must equal REQUIREMENTS §7.3 exactly.
+        return _call_and_log(
+            "check_request_eligibility",
+            lambda: eligibility.check_request_eligibility(
+                employee_id, item, directory=directory, policy=policy_table, as_of=as_of
+            ),
+            # Both files decide the verdict, so the log names both (same as data_versions).
+            data_version={"employees": directory.data_version, "policy": policy_table.data_version},
+            inputs={"employee_id": employee_id, "item": item},
+            result_fields=_eligibility_fields,
+            status_of=_verdict_or_error,
         )
 
     return server

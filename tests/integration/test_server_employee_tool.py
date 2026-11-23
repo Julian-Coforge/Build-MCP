@@ -23,7 +23,11 @@ async def test_lists_exactly_the_registered_tools(server: MCPServer) -> None:
         result = await client.list_tools()
 
     # Sorted, so the test doesn't depend on registration order.
-    assert sorted(t.name for t in result.tools) == ["get_employee_info", "get_policy_limits"]
+    assert sorted(t.name for t in result.tools) == [
+        "check_request_eligibility",
+        "get_employee_info",
+        "get_policy_limits",
+    ]
     tool = next(t for t in result.tools if t.name == "get_employee_info")
     assert tool.description == EXPECTED_DESCRIPTION
 

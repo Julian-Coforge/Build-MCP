@@ -366,6 +366,7 @@ Each entry: the decision, and why.
 | 2026-11-23 | M2 | `get_policy_limits` MCP tool; `resolved_employee_id` in `get_employee_info` logs; shared `_call_and_log` helper; `policy_version` in `server.start`; client demo calls the policy tool | Second tool exposed over MCP and proven end to end over HTTP |
 | 2026-11-23 | M3 | Failing tests for `check_request_eligibility` and `add_months` (`test_eligibility.py`) | TDD red step |
 | 2026-11-23 | M3 | `eligibility.py`: `add_months`, `check_request_eligibility` | REQUIREMENTS §4.3 as a pure function, before any MCP wrapping |
+| 2026-11-23 | M3 | Failing integration tests for the `check_request_eligibility` tool (`test_server_eligibility_tool.py`); tool-list test expects three tools | TDD red step |
 
 ## 7. Known issues and fixes
 

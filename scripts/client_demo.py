@@ -16,6 +16,16 @@ REQUESTS = ["E1001", " e1001 ", "E9999"]
 # A plain role, a mixed-case role (lookup is case-insensitive) and an unknown role.
 ROLE_REQUESTS = ["standard", "Manager", "intern"]
 
+# One case per kind of verdict: new unit (R-NEW), refresh not due (R-REFRESH), replacement
+# with the unit to return (R-REFRESH-OK), on leave (R-STATUS) and an unknown item.
+ELIGIBILITY_REQUESTS = [
+    ("E1002", "monitor"),
+    ("E1001", "laptop"),
+    ("E1003", "monitor"),
+    ("E1006", "monitor"),
+    ("E1001", "standing_desk"),
+]
+
 
 def heading(text: str) -> None:
     print(f"\n{'=' * 60}\n{text}\n{'=' * 60}")
@@ -36,6 +46,13 @@ async def main() -> None:
         for role in ROLE_REQUESTS:
             heading(f"get_policy_limits(role={role!r})")
             result = await client.call_tool("get_policy_limits", {"role": role})
+            print(json.dumps(result.structured_content, indent=2))
+
+        for employee_id, item in ELIGIBILITY_REQUESTS:
+            heading(f"check_request_eligibility(employee_id={employee_id!r}, item={item!r})")
+            result = await client.call_tool(
+                "check_request_eligibility", {"employee_id": employee_id, "item": item}
+            )
             print(json.dumps(result.structured_content, indent=2))
 
 

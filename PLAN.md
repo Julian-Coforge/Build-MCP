@@ -1,6 +1,6 @@
 # IT Equipment Request Handler: Project Plan
 
-**Status:** v1.0, draft for approval
+**Status:** v1.0, approved by Julian on 2026-11-23 (decisions D1 to D5 settled; see Section 14)
 **Date:** 2026-11-23
 **Due:** 2026-11-26 (2.5 days from now)
 **Rigor tier:** Prototype, with full cost tracking, structured logging and tracing

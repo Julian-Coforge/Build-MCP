@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Never calls the live Claude API: unit and integration tests use fakes,
+# so CI is free, deterministic and needs no secrets.
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+
+      # Ordered fast to slow so the cheapest failure is reported first.
+      - name: Format check
+        run: ruff format --check .
+      - name: Lint
+        run: ruff check .
+      - name: Type check
+        run: mypy
+      - name: Unit tests
+        run: pytest tests/unit --cov --cov-report=term-missing
+      - name: Integration tests
+        # pytest exits 5 when it collects no tests. Integration tests arrive in M4;
+        # until then "no tests" is accepted, but any real failure still fails CI.
+        run: pytest tests/integration || [ $? -eq 5 ]
+      - name: Dependency audit
+        run: pip-audit --skip-editable

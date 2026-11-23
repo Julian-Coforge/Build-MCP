@@ -93,6 +93,12 @@ def _bad_employee_id_format(d: dict[str, Any]) -> None:
     d["employees"][0]["employee_id"] = "1001"
 
 
+def _non_ascii_digit_employee_id(d: dict[str, Any]) -> None:
+    # Arabic-Indic digits: regex \d accepts them, but they are not valid E#### IDs and
+    # would never match the ASCII ID the agent looks up.
+    d["employees"][0]["employee_id"] = "E١٠٠١"
+
+
 def _unknown_role(d: dict[str, Any]) -> None:
     d["employees"][0]["role"] = "intern"
 
@@ -136,6 +142,7 @@ def _missing_employees_key(d: dict[str, Any]) -> None:
         _duplicate_employee_id,
         _duplicate_asset_id,
         _bad_employee_id_format,
+        _non_ascii_digit_employee_id,
         _unknown_role,
         _unknown_status,
         _unknown_item,

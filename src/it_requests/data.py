@@ -19,8 +19,10 @@ CatalogItem = Literal[
 ]
 
 # Derived from the Literals, not retyped, so the allowed values have one source of truth.
-ROLES: tuple[str, ...] = get_args(Role)
-CATALOG_ITEMS: tuple[str, ...] = get_args(CatalogItem)
+# Typed with the Literal (not str), so code iterating them gets Role / CatalogItem values
+# that mypy accepts as dict keys and return values without a cast.
+ROLES: tuple[Role, ...] = get_args(Role)
+CATALOG_ITEMS: tuple[CatalogItem, ...] = get_args(CatalogItem)
 
 NonEmptyStr = Annotated[str, Field(min_length=1)]
 

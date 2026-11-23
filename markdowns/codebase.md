@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-23, milestone M2 in progress (policy data file and loader). M1 is verified.
+**Last updated:** 2026-11-23, milestone M2 in progress (policy data file and loader, `get_policy_limits` as a pure function). M1 is verified.
 
 ---
 
@@ -17,7 +17,7 @@ Policy decisions are made by plain, tested Python functions. The LLM only interp
 
 ## 2. Current state
 
-M0 is done. In M1, the mock employee data, its validating loader and `get_employee_info` exist as plain functions with tests, as does the JSON logging module. The real MCP server exposes one tool, `get_employee_info`, over streamable HTTP, and `scripts/client_demo.py` calls it. In M2, the role-entitlement policy (`data/policy.json`) and its validating loader exist with tests. `get_policy_limits` comes next. The other tools come in M3 and M4.
+M0 is done. In M1, the mock employee data, its validating loader and `get_employee_info` exist as plain functions with tests, as does the JSON logging module. The real MCP server exposes one tool, `get_employee_info`, over streamable HTTP, and `scripts/client_demo.py` calls it. In M2, the role-entitlement policy (`data/policy.json`) and its validating loader exist with tests, as does `get_policy_limits` as a pure function. Wrapping it as an MCP tool comes next. The other tools come in M3 and M4.
 
 | File | What it does | Status |
 |---|---|---|
@@ -26,6 +26,7 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 | `data/policy.json` | The role-entitlement matrix from REQUIREMENTS §4.1: 4 roles × 6 items, each with `max` and `refresh_months`. Top-level `data_version` (`policy-v1`) and `effective_date`. | Tested (loads and validates) |
 | `src/it_requests/data.py` | Pydantic models (`EquipmentItem`, `Employee`, `EmployeeDirectory`), the `Role`, `Status` and `CatalogItem` literals, the `ROLES` and `CATALOG_ITEMS` tuples, `EMPLOYEE_ID_PATTERN`, `DataValidationError` and `load_employees(path)`. Policy models (`ItemLimit`, `PolicyTable`) and `load_policy(path)`. | Tested, 100% coverage |
 | `src/it_requests/employees.py` | `normalize_employee_id`, `tenure_months` and `get_employee_info`: the pure function behind the MCP tool (REQUIREMENTS §7.1). | Tested, 100% coverage |
+| `src/it_requests/policy.py` | `normalize_role` and `get_policy_limits`: the pure function behind the future MCP tool (REQUIREMENTS §7.2). | Tested, 100% coverage |
 | `src/it_requests/observability.py` | `request_id_var`, `REDACTED_KEYS`, `JsonFormatter`, `log_event` and `configure_logging`: structured JSON logging for the server and, later, the agent (PLAN §5). | Tested, 100% coverage; used by `server.py` |
 | `src/it_requests/server.py` | `build_server(directory, *, as_of)` registers the `get_employee_info` tool as a thin wrapper that logs one `tool.call` event. `main()` configures logging, loads the data, logs `server.start` and serves on `http://127.0.0.1:8000/mcp`. | Integration-tested in-process; `main()` checked by hand |
 | `scripts/client_demo.py` | Connects over HTTP, lists the tools, and calls `get_employee_info` for `E1001`, `" e1001 "` and `E9999` (screenshot for deliverable #2). | Checked by hand |
@@ -60,6 +61,14 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
   - **Bad format:** returns `{"error": "INVALID_EMPLOYEE_ID", "employee_id": <raw input>}`.
   - **Valid format, unknown ID:** returns `{"error": "EMPLOYEE_NOT_FOUND", "employee_id": <normalised ID>}`.
   - **Status:** reported as it is, not judged. `on_leave` is a normal success, because judging status is the eligibility tool's job.
+
+### `policy.py` in detail
+
+- **`normalize_role(raw)`:** strips whitespace and lower-cases. Returns the matching role from `ROLES`, typed as `Role`, or `None` if there is no match.
+- **`get_policy_limits(role, *, policy)`:**
+  - **Success:** returns `{"role", "limits", "data_version"}`. `limits` has all six items in `CATALOG_ITEMS` order, each as `{"max", "refresh_months"}`.
+  - **`refresh_months`:** passed through unchanged: an int, `"none"` or `None`, which becomes `null` in JSON.
+  - **Unknown role:** returns `{"error": "UNKNOWN_ROLE", "role": <raw input>}`.
 
 ### `observability.py` in detail
 
@@ -99,6 +108,7 @@ Build-MCP/
 │   ├── config.py           # shared constants (REFERENCE_DATE, DATA_DIR, EMPLOYEES_FILE, POLICY_FILE)
 │   ├── data.py             # Pydantic data models, load_employees and load_policy
 │   ├── employees.py        # get_employee_info and its helpers (pure)
+│   ├── policy.py           # get_policy_limits and normalize_role (pure)
 │   ├── observability.py    # JSON logging: log_event, configure_logging
 │   ├── server.py           # MCP server: build_server (thin tool wrappers) and main
 │   └── py.typed            # marks the package as typed for mypy
@@ -106,7 +116,7 @@ Build-MCP/
 │   ├── employees.json      # mock employees (REQUIREMENTS §8)
 │   └── policy.json         # role entitlements (REQUIREMENTS §4.1)
 ├── tests/
-│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_observability
+│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_observability
 │   └── integration/        # conftest (server fixture), test_server_employee_tool
 ├── scripts/
 │   └── client_demo.py      # calls the running server over HTTP
@@ -268,6 +278,12 @@ Each entry: the decision, and why.
 35. **`limits_for` returns a copy of the role's limits.**
     *Why:* `frozen=True` stops fields being reassigned, but a dict inside a model can still be changed. The copy keeps the shared table safe from callers.
 
+36. **`ROLES` and `CATALOG_ITEMS` are typed `tuple[Role, ...]` and `tuple[CatalogItem, ...]`, not `tuple[str, ...]`.**
+    *Why:* code that loops over them gets `Role` and `CatalogItem` values. mypy then accepts them as dict keys and return values without a `cast`, which `normalize_role` and `get_policy_limits` rely on.
+
+37. **`get_policy_limits` builds `limits` in `CATALOG_ITEMS` order and passes `refresh_months` through unchanged.**
+    *Why:* the output is the same on every call. `"none"` (R-LIMIT) and `null` (R-ROLE) stay distinct, so the model never has to infer entitlement from `max` (REQUIREMENTS §7.2).
+
 ## 6. Change log
 
 | Date | Milestone | Change | Why |
@@ -291,6 +307,7 @@ Each entry: the decision, and why.
 | 2026-11-23 | M2 | Failing tests for the policy data file and loader (`test_policy_data.py`) | TDD red step |
 | 2026-11-23 | M2 | `data/policy.json`, `ItemLimit`, `PolicyTable`, `load_policy`, `POLICY_FILE`; both loaders refactored onto `_load_model` | Role entitlements as validated data that fails loudly |
 | 2026-11-23 | M2 | Failing tests for `get_policy_limits` (`test_policy.py`) | TDD red step |
+| 2026-11-23 | M2 | `policy.py`: `normalize_role`, `get_policy_limits`; `ROLES` and `CATALOG_ITEMS` typed with their literals | REQUIREMENTS §7.2 as a pure function, before any MCP wrapping |
 
 ## 7. Known issues and fixes
 

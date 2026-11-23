@@ -3,7 +3,7 @@
 > Where the project is right now. Updated as each item is finished.
 > Details for each milestone are in `PLAN.md` §13; what the code does is in `codebase.md`.
 
-**Current stage:** M1 verified, waiting for you to push and merge the PR. Next: **M2**.
+**Current stage:** M1 complete (merged). Now: **M2**, prompt pack in `markdowns/prompts/M2.md`.
 **Due:** 2026-11-26 · **LLM spend so far:** $0.00 of the $5 budget (code gate at $4.00)
 
 Legend: `[x]` done · `[ ]` not done · 📸 = screenshot for the submission PDF (number = deliverable order)
@@ -28,11 +28,12 @@ Legend: `[x]` done · `[ ]` not done · 📸 = screenshot for the submission PDF
 - [x] Wrapped as an MCP tool on the real server
 - [x] `scripts/client_demo.py` calls it over HTTP and gets a real response
 - [x] 📸 **#2** Terminal output: server running, plus the client getting a real `get_employee_info` response
-- [ ] M1 PR pushed, CI green and merged *(yours)*
+- [x] M1 PR pushed, CI green and merged *(yours)*
 
 ## M2: `get_policy_limits` (brief step 4)
 - [ ] `data/policy.json`, with validation tests
 - [ ] Unit tests: all four roles, unknown role, mixed case, `"none"` vs `null`
+- [ ] `tool.call` log for `get_employee_info` gains `resolved_employee_id`
 - [ ] Plain function passes, wrapped as a tool, callable from the client
 
 ## M3: `check_request_eligibility` (brief step 4)

@@ -1,4 +1,4 @@
-"""Mock employee data: Pydantic models and a loader that fails loudly on bad data.
+"""Mock employee and policy data: Pydantic models and loaders that fail loudly on bad data.
 
 Why fail loudly (PLAN §3): a silently bad record would surface later as a wrong
 approval, which is the worst outcome in this system. So any problem stops start-up.
@@ -38,6 +38,25 @@ _STRICT = ConfigDict(extra="forbid", frozen=True)
 
 class DataValidationError(Exception):
     """Raised when a data file is missing, unreadable or fails validation."""
+
+
+def _load_model[M: BaseModel](path: Path, model: type[M], what: str) -> M:
+    """Read a JSON file and validate it as `model`. Every failure becomes DataValidationError.
+
+    One shared helper, so the error handling exists once: every data file fails the same
+    way (one exception type, the path in the message, the cause chained with `from err`),
+    and a fix here applies to all loaders.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as err:
+        raise DataValidationError(f"cannot read {what} data file {path}: {err}") from err
+    try:
+        return model.model_validate_json(raw)
+    except ValidationError as err:
+        # Pydantic reports malformed JSON as a ValidationError too, so this one branch
+        # covers both "not JSON" and "JSON with bad content".
+        raise DataValidationError(f"invalid {what} data in {path}: {err}") from err
 
 
 class EquipmentItem(BaseModel):
@@ -112,18 +131,70 @@ def load_employees(path: Path) -> EmployeeDirectory:
     """Read and validate an employee file. Every failure becomes DataValidationError.
 
     One exception type means start-up code catches a single error, and the path in the
-    message tells the operator which file to fix. `from err` keeps the original cause.
+    message tells the operator which file to fix.
     """
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError as err:
-        raise DataValidationError(f"cannot read employee data file {path}: {err}") from err
-    try:
-        return EmployeeDirectory.model_validate_json(raw)
-    except ValidationError as err:
-        # Pydantic reports malformed JSON as a ValidationError too, so this one branch
-        # covers both "not JSON" and "JSON with bad content".
-        raise DataValidationError(f"invalid employee data in {path}: {err}") from err
+    return _load_model(path, EmployeeDirectory, "employee")
+
+
+# --- Policy (REQUIREMENTS §4.1, §4.2, §7.2) -------------------------------------
+
+
+class ItemLimit(BaseModel):
+    model_config = _STRICT
+
+    max: Annotated[int, Field(ge=0)]
+    # Positive int = refresh interval; "none" = entitled, no refresh cycle (R-LIMIT);
+    # None (JSON null) = not entitled (R-ROLE). Distinct values, so the model never has to
+    # infer one meaning from max (REQUIREMENTS §7.2, v1.1).
+    refresh_months: Annotated[int, Field(gt=0)] | Literal["none"] | None
+
+    # The max/refresh pairing is enforced here, in the model, not left to convention: the
+    # eligibility logic relies on it, and a contradictory pair (max 0 with refresh 24, or
+    # max 1 with null) would otherwise load fine and give a wrong decision later.
+    @model_validator(mode="after")
+    def _check_max_matches_refresh(self) -> Self:
+        if self.max == 0 and self.refresh_months is not None:
+            raise ValueError(
+                f"max is 0 (not entitled), so refresh_months must be null, "
+                f"got {self.refresh_months!r}"
+            )
+        if self.max > 0 and self.refresh_months is None:
+            raise ValueError(
+                f"max is {self.max} (entitled), so refresh_months must be a positive "
+                f'integer or "none", got null'
+            )
+        return self
+
+
+class PolicyTable(BaseModel):
+    model_config = _STRICT
+
+    data_version: NonEmptyStr
+    effective_date: date
+    # Literal keys reject unknown roles and items; the validator below catches missing ones.
+    roles: dict[Role, dict[CatalogItem, ItemLimit]]
+
+    @model_validator(mode="after")
+    def _check_complete(self) -> Self:
+        # Every role must define every item: a gap would leave the eligibility check with
+        # no rule to apply, so it fails at load instead of at request time.
+        missing_roles = [r for r in ROLES if r not in self.roles]
+        if missing_roles:
+            raise ValueError(f"policy is missing role(s): {', '.join(missing_roles)}")
+        for role, items in self.roles.items():
+            missing_items = [i for i in CATALOG_ITEMS if i not in items]
+            if missing_items:
+                raise ValueError(f"role {role} is missing item(s): {', '.join(missing_items)}")
+        return self
+
+    def limits_for(self, role: Role) -> dict[CatalogItem, ItemLimit]:
+        """Limits for one role. Returns a copy, so callers can't alter the shared table."""
+        return dict(self.roles[role])
+
+
+def load_policy(path: Path) -> PolicyTable:
+    """Read and validate the policy file. Every failure becomes DataValidationError."""
+    return _load_model(path, PolicyTable, "policy")
 
 
 __all__ = [
@@ -135,7 +206,10 @@ __all__ = [
     "Employee",
     "EmployeeDirectory",
     "EquipmentItem",
+    "ItemLimit",
+    "PolicyTable",
     "Role",
     "Status",
     "load_employees",
+    "load_policy",
 ]

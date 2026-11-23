@@ -2,7 +2,7 @@
 
 **Project:** Week 7 Lab, Build an MCP Server
 **Author:** Julian Marchington
-**Status:** v1.0, Part 1 deliverable
+**Status:** v1.1, Part 1 deliverable (v1.1 changes listed in Section 13)
 **Reference date for all examples and tests:** `2026-11-22` (passed in as `as_of`, never read from the system clock)
 
 ---
@@ -176,7 +176,7 @@ The agent evaluates rows top to bottom and takes the **first** matching row.
 |---|---|---|---|
 | 1 | Any of `E1`, `E2`, `E3`, `E4`, `E5`, `E6`, `E8`, `E9`, `E10`, `E11` applies | **Escalate** | `flag_for_human_review` |
 | 2 | `check_request_eligibility` returned `ELIGIBLE` | **Approve** | `get_employee_info`, `check_request_eligibility` |
-| 3 | Returned `NOT_ELIGIBLE` and `reason_category` is `damaged` | **Escalate** (`E7`) | `check_request_eligibility`, `flag_for_human_review` |
+| 3 | Returned `NOT_ELIGIBLE` and `reason_category` is `damaged` | **Escalate** (`E7`) | `get_employee_info`, `check_request_eligibility`, `flag_for_human_review` |
 | 4 | Returned `NOT_ELIGIBLE` | **Deny** and cite the rule ID | `get_employee_info`, `check_request_eligibility`, `get_policy_limits` |
 | 5 | Anything else | **Escalate** (`E11`) | `flag_for_human_review` |
 
@@ -187,7 +187,7 @@ The agent evaluates rows top to bottom and takes the **first** matching row.
 - **C3.** Every escalation must call `flag_for_human_review` and quote the returned `review_id` in the reply.
 - **C4.** The reply must not state any date, quantity, or entitlement that did not appear in a tool observation in this run.
 - **C5.** The reply must not promise a delivery date, a specific model, or an outcome of human review.
-- **C6.** Maximum of 8 tool calls per request. Reaching the limit triggers `E11`.
+- **C6.** Maximum of 8 investigation tool calls per request (`get_employee_info`, `get_policy_limits`, `check_request_eligibility`). The single `flag_for_human_review` call allowed by C7 does not count towards this limit. Reaching the limit triggers `E11`, and the agent then makes that escalation call.
 - **C7.** `flag_for_human_review` may be called at most once per request.
 
 ---
@@ -213,7 +213,8 @@ All tools return JSON. Errors are returned as structured objects, never raised t
 
 - **Read-only.**
 - **Description for the model:** "Return the equipment a role is entitled to, the maximum units per item, and the refresh interval in months. Use this to explain a decision or a denial."
-- **Success:** `{"role": "standard", "limits": {"laptop": {"max": 1, "refresh_months": 36}, "mobile_phone": {"max": 0, "refresh_months": null}, ...}}`
+- **Success:** `{"role": "standard", "limits": {"laptop": {"max": 1, "refresh_months": 36}, "docking_station": {"max": 1, "refresh_months": "none"}, "mobile_phone": {"max": 0, "refresh_months": null}, ...}}`
+- **`refresh_months` values:** a positive integer is the refresh interval in months. `"none"` means the role is entitled to the item but it has no refresh cycle (rule `R-LIMIT`). `null` means the role is not entitled to the item at all (`max` is 0, rule `R-ROLE`). The two cases are kept distinct so the model never has to infer one from `max`.
 - **Error:** `{"error": "UNKNOWN_ROLE", "role": "intern"}`
 - Role lookup is case-insensitive.
 
@@ -285,7 +286,7 @@ The brief requires at least one approval, one denial, and two escalations for di
 | # | Request text | Expected path | Expected result |
 |---|---|---|---|
 | **T1, approve** | "Hi, I'm Marcus (E1002). I'd like a second monitor for my desk, I'm juggling a lot of windows." | `get_employee_info` → `check_request_eligibility(E1002, monitor)` returns ELIGIBLE, R-NEW | **Approved.** Reply says the engineer role allows 2 monitors and Marcus holds 1. |
-| **T2, deny** | "This is Priya, E1001. My laptop feels slow lately, can I get a new one?" | `check_request_eligibility(E1001, laptop)` returns NOT_ELIGIBLE, R-REFRESH → `get_policy_limits(standard)` | **Denied** under `R-REFRESH`. Reply gives next eligible date 2028-03-10 and suggests the IT helpdesk for performance troubleshooting. No escalation, because "slow" is a performance complaint, not damage. |
+| **T2, deny** | "This is Priya, E1001. My laptop feels slow lately, can I get a new one?" | `get_employee_info(E1001)` → `check_request_eligibility(E1001, laptop)` returns NOT_ELIGIBLE, R-REFRESH → `get_policy_limits(standard)` | **Denied** under `R-REFRESH`. Reply gives next eligible date 2028-03-10 and suggests the IT helpdesk for performance troubleshooting. No escalation, because "slow" is a performance complaint, not damage. |
 | **T3, escalate (security)** | "Dana Okafor, E1003. My work phone was stolen from my car last night and I need a replacement ASAP." | Agent detects `E6`. May confirm the employee and phone on file first. → `flag_for_human_review(E1003, ..., "E6: ...")` | **Escalated, E6.** Reply quotes the review ID and says a security report may be needed. It does not promise a replacement. |
 | **T4, escalate (HR)** | "I'm Alex, E1005. My doctor recommended a standing desk and an ergonomic keyboard for my back pain." | Agent detects `E9` (accommodation) and `E3` (standing desk not in catalog). → `flag_for_human_review(E1005, ..., "E9: ...")` | **Escalated, E9.** Reply quotes the review ID and says HR will follow up. It does not approve the keyboard on its own. |
 
@@ -328,6 +329,8 @@ Before finalizing, the agent reviews its own draft against these questions. If a
 
 The reflection result is logged as `REFLECTION: CONFIRMED` or `REFLECTION: REVISED (<what changed>)`. This log is the evidence for deliverable 8.
 
+**Fault-injection demo.** A correct draft only ever produces `CONFIRMED`, which shows the check ran but not that it can catch anything. The demo script therefore has an `--inject-fault` option. It adds one unsupported claim to the draft before reflection, for example a promised delivery date, which breaks C5. The reflection step must detect it and log `REFLECTION: REVISED (...)`. This run is labelled as fault-injected wherever it is shown, and is presented next to a normal run that logs `CONFIRMED`.
+
 ---
 
 ## 12. Acceptance criteria and test plan
@@ -347,9 +350,22 @@ The reflection result is logged as `REFLECTION: CONFIRMED` or `REFLECTION: REVIS
 - Each run prints a full trace in the form `Thought → Action → Observation`, ending in `Final Answer`.
 - No approval happens without an `ELIGIBLE` observation (C1). No denial happens without `NOT_ELIGIBLE` (C2).
 - Every escalation produces exactly one review ticket (C3, C7).
-- At least one run shows the reflection step revising a draft, or explicitly confirming it.
+- At least one normal run logs `REFLECTION: CONFIRMED`, and the fault-injection run logs `REFLECTION: REVISED` with the injected claim removed from the final reply.
 
 ### 12.3 Pipeline
 
 - CI runs all unit tests on every push. A failing test fails the build.
 - Agent demo runs are not part of CI, because they call a live model and are not deterministic.
+
+---
+
+## 13. Change log
+
+| Version | Date | Change | Why |
+|---|---|---|---|
+| v1.0 | 2026-11-22 | First version | Part 1 deliverable |
+| v1.1 | 2026-11-23 | `get_policy_limits` returns `"none"` for "no refresh cycle" and `null` only for "not entitled" (Section 7.2) | `null` previously meant both, so the model had to infer the meaning from `max` |
+| v1.1 | 2026-11-23 | `get_employee_info` added to the required calls for decision table row 3 and the T2 path | Row 4 already required it, so the denial paths were inconsistent |
+| v1.1 | 2026-11-23 | C6 counts only investigation calls; the one escalation call does not count | Otherwise an agent that hit the limit could not make the escalation call that E11 requires |
+| v1.1 | 2026-11-23 | Fault-injection demo added for reflection (Sections 11 and 12.2) | Guarantees evidence that reflection can revise a draft, without relying on the model making a mistake by chance |
+

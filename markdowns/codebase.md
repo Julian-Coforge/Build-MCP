@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-23, milestone M2 (policy data, `get_policy_limits` as a pure function and as the second MCP tool). M1 and M2 are verified.
+**Last updated:** 2026-11-23, milestone M3 in progress (`check_request_eligibility` as a pure function). M1 and M2 are verified.
 
 ---
 
@@ -17,7 +17,7 @@ Policy decisions are made by plain, tested Python functions. The LLM only interp
 
 ## 2. Current state
 
-M0 is done. In M1, the mock employee data, its validating loader and `get_employee_info` exist as plain functions with tests, as does the JSON logging module. The real MCP server exposes one tool, `get_employee_info`, over streamable HTTP, and `scripts/client_demo.py` calls it. In M2, the role-entitlement policy (`data/policy.json`) and its validating loader exist with tests, as does `get_policy_limits`, as a pure function and as the server's second MCP tool. The other two tools come in M3 and M4.
+M0 is done. In M1, the mock employee data, its validating loader and `get_employee_info` exist as plain functions with tests, as does the JSON logging module. The real MCP server exposes one tool, `get_employee_info`, over streamable HTTP, and `scripts/client_demo.py` calls it. In M2, the role-entitlement policy (`data/policy.json`) and its validating loader exist with tests, as does `get_policy_limits`, as a pure function and as the server's second MCP tool. In M3, `check_request_eligibility` exists as a pure function with tests. Wrapping it as an MCP tool comes next, and `flag_for_human_review` follows in M4.
 
 | File | What it does | Status |
 |---|---|---|
@@ -27,6 +27,7 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 | `src/it_requests/data.py` | Pydantic models (`EquipmentItem`, `Employee`, `EmployeeDirectory`), the `Role`, `Status` and `CatalogItem` literals, the `ROLES` and `CATALOG_ITEMS` tuples, `EMPLOYEE_ID_PATTERN`, `DataValidationError` and `load_employees(path)`. Policy models (`ItemLimit`, `PolicyTable`) and `load_policy(path)`. | Tested, 100% coverage |
 | `src/it_requests/employees.py` | `normalize_employee_id`, `tenure_months` and `get_employee_info`: the pure function behind the MCP tool (REQUIREMENTS §7.1). | Tested, 100% coverage |
 | `src/it_requests/policy.py` | `normalize_role` and `get_policy_limits`: the pure function behind the MCP tool (REQUIREMENTS §7.2). | Tested, 100% coverage |
+| `src/it_requests/eligibility.py` | `add_months` and `check_request_eligibility`: the REQUIREMENTS §4.3 algorithm, the only source of truth for eligibility. | Tested, 100% coverage |
 | `src/it_requests/observability.py` | `request_id_var`, `REDACTED_KEYS`, `JsonFormatter`, `log_event` and `configure_logging`: structured JSON logging for the server and, later, the agent (PLAN §5). | Tested, 100% coverage; used by `server.py` |
 | `src/it_requests/server.py` | `build_server(directory, policy_table, *, as_of)` registers the `get_employee_info` and `get_policy_limits` tools as thin wrappers. Both log through one helper, `_call_and_log`. `main()` configures logging, loads both data files, logs `server.start` and serves on `http://127.0.0.1:8000/mcp`. | Integration-tested in-process; `main()` checked by hand |
 | `scripts/client_demo.py` | Connects over HTTP, lists the tools, calls `get_employee_info` for `E1001`, `" e1001 "` and `E9999`, then calls `get_policy_limits` for `standard`, `Manager` and `intern` (screenshot for deliverable #2). | Checked by hand |
@@ -69,6 +70,30 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
   - **Success:** returns `{"role", "limits", "data_version"}`. `limits` has all six items in `CATALOG_ITEMS` order, each as `{"max", "refresh_months"}`.
   - **`refresh_months`:** passed through unchanged: an int, `"none"` or `None`, which becomes `null` in JSON.
   - **Unknown role:** returns `{"error": "UNKNOWN_ROLE", "role": <raw input>}`.
+
+### `eligibility.py` in detail
+
+- **`add_months(d, months)`:** adds calendar months. If the target day doesn't exist, it uses that month's last day (§4.2), found with `calendar.monthrange`. For example, 2024-01-31 + 1 is 2024-02-29.
+- **`check_request_eligibility(employee_id, item, *, directory, policy, as_of=REFERENCE_DATE)`:** runs the §4.3 steps in order, and the first step that applies wins.
+  1. Bad ID format: `INVALID_EMPLOYEE_ID`, echoing the raw input.
+  2. Unknown employee: `EMPLOYEE_NOT_FOUND`, echoing the normalised ID.
+  3. Item not in the catalog, checked after trimming and lower-casing: `UNKNOWN_ITEM`, echoing the raw item.
+  4. Status not `active`: `NEEDS_REVIEW`, rule R-STATUS. This returns before the policy is read.
+  5. Role `max` is 0: `NOT_ELIGIBLE`, rule R-ROLE.
+  6. Fewer units held than `max`: `ELIGIBLE`, rule R-NEW.
+  7. `refresh_months` is `"none"`: `NOT_ELIGIBLE`, rule R-LIMIT.
+  8. The oldest unit's refresh date is on or before `as_of`: `ELIGIBLE`, rule R-REFRESH-OK. `replaces_asset_id` names the unit to return.
+  9. Otherwise: `NOT_ELIGIBLE`, rule R-REFRESH, with `next_eligible_date`.
+- **Oldest unit:** the held unit with the earliest `issued_date`, with ties broken by `asset_id`.
+- **Verdict keys:** every verdict has the same 15 keys:
+  - `employee_id`, `item`, `status` and `rule_id`
+  - `role` and `employment_status`
+  - `units_held`, `max` and `refresh_months`
+  - `oldest_issued_date`, `refresh_date` and `next_eligible_date`
+  - `replaces_asset_id`
+  - `as_of` and `data_versions` (both file versions)
+
+  Keys that don't apply are `null`, and all dates are ISO strings.
 
 ### `observability.py` in detail
 
@@ -113,6 +138,7 @@ Build-MCP/
 │   ├── data.py             # Pydantic data models, load_employees and load_policy
 │   ├── employees.py        # get_employee_info and its helpers (pure)
 │   ├── policy.py           # get_policy_limits and normalize_role (pure)
+│   ├── eligibility.py      # check_request_eligibility and add_months (pure)
 │   ├── observability.py    # JSON logging: log_event, configure_logging
 │   ├── server.py           # MCP server: build_server (thin tool wrappers) and main
 │   └── py.typed            # marks the package as typed for mypy
@@ -120,7 +146,7 @@ Build-MCP/
 │   ├── employees.json      # mock employees (REQUIREMENTS §8)
 │   └── policy.json         # role entitlements (REQUIREMENTS §4.1)
 ├── tests/
-│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_observability
+│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_observability
 │   └── integration/        # conftest (server, server_log), test_server_employee_tool, test_server_policy_tool
 ├── scripts/
 │   └── client_demo.py      # calls the running server over HTTP
@@ -294,6 +320,24 @@ Each entry: the decision, and why.
 39. **`get_employee_info` logs both the raw `employee_id` and `resolved_employee_id`.**
     *Why:* the raw value shows exactly what the agent sent, including a bad ID. The resolved value lets one `jq` query find every lookup of an employee, however messy the input was. It is `null` on any error, never a guess.
 
+40. **The eligibility steps run in the exact §4.3 order, and the first match wins.**
+    *Why:* the order is part of the rules. For example, an on-leave employee asking for an item their role can't have gets `NEEDS_REVIEW`, because a human must look at any non-active employee first. Tests pin each ordering case.
+
+41. **The "oldest unit" tie is broken by `asset_id`.**
+    *Why:* E1003 holds two monitors issued on the same day. Without a tie-break, the unit the employee is told to return could change between runs, or when the data file is reordered.
+
+42. **`R-REFRESH-OK` returns `replaces_asset_id`.**
+    *Why:* REQUIREMENTS §10 says a refresh approval is a replacement, and the reply must name the unit being returned. It never raises the employee above `max`.
+
+43. **Every verdict has one fixed set of 15 keys, with `null` where a key doesn't apply.**
+    *Why:* the agent, the tests and the logs never have to check whether a key is present.
+
+44. **`data_versions` names both data files.**
+    *Why:* the verdict depends on the employee data and on the policy. Lineage (PLAN §3) must be able to trace it back to both.
+
+45. **An `assert` documents the invariant before the refresh step.**
+    *Why:* by step 8, `max > 0` and units held equal `max`, so a unit exists. The `ItemLimit` validator guarantees `refresh_months` is a positive int. The assert states this for mypy and for readers. No valid data can trigger it, so it doesn't conflict with "errors are returned as data".
+
 ## 6. Change log
 
 | Date | Milestone | Change | Why |
@@ -321,6 +365,7 @@ Each entry: the decision, and why.
 | 2026-11-23 | M2 | Failing integration tests for the `get_policy_limits` tool and `resolved_employee_id` logging; `server_log` fixture moved to `conftest.py` | TDD red step |
 | 2026-11-23 | M2 | `get_policy_limits` MCP tool; `resolved_employee_id` in `get_employee_info` logs; shared `_call_and_log` helper; `policy_version` in `server.start`; client demo calls the policy tool | Second tool exposed over MCP and proven end to end over HTTP |
 | 2026-11-23 | M3 | Failing tests for `check_request_eligibility` and `add_months` (`test_eligibility.py`) | TDD red step |
+| 2026-11-23 | M3 | `eligibility.py`: `add_months`, `check_request_eligibility` | REQUIREMENTS §4.3 as a pure function, before any MCP wrapping |
 
 ## 7. Known issues and fixes
 

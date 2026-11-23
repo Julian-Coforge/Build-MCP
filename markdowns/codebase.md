@@ -184,6 +184,7 @@ Each entry: the decision, and why.
 | 2026-11-23 | M1 | Failing tests for `get_employee_info` (`test_employees.py`) | TDD red step |
 | 2026-11-23 | M1 | `employees.py`: `normalize_employee_id`, `tenure_months`, `get_employee_info` | REQUIREMENTS §7.1 as a pure function, before any MCP wrapping |
 | 2026-11-23 | M1 | Shared `EMPLOYEE_ID_PATTERN` restricted to ASCII digits, with a reproduction test | Fix for non-ASCII digits being accepted (see §7) |
+| 2026-11-23 | M1 | Failing tests for JSON logging (`test_observability.py`) | TDD red step |
 
 ## 7. Known issues and fixes
 

@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-23, milestone M2 (policy data, `get_policy_limits` as a pure function and as the second MCP tool). M1 is verified.
+**Last updated:** 2026-11-23, milestone M2 (policy data, `get_policy_limits` as a pure function and as the second MCP tool). M1 and M2 are verified.
 
 ---
 
@@ -334,7 +334,7 @@ Each entry: the decision, and why.
 ### 7.2 Log values seen in the M1 demo (expected, not bugs)
 
 - **`"request_id": null` on every line.** A request ID belongs to one equipment request handled by the agent, and the agent doesn't exist until M5. In M5 the agent sets `request_id_var` and sends the ID to the server in the MCP call metadata, so server lines will carry it from then on.
-- **`tool.call` logs the raw input (`" e1001 "`), not the normalised ID.** This is deliberate (see the comment in `server.py`): a bad ID must be visible exactly as sent. The gap is that a successful call doesn't show which employee it resolved to. Adding a `resolved_employee_id` field is planned for M2, when the server is next changed.
+- **`tool.call` logs the raw input (`" e1001 "`), not the normalised ID.** This is deliberate (see the comment in `server.py`): a bad ID must be visible exactly as sent. The gap is that a successful call doesn't show which employee it resolved to. Fixed in M2: `tool.call` lines for `get_employee_info` now include `resolved_employee_id` (the matched ID, or null on an error).
 
 ### 7.3 M1 verification (2026-11-23)
 
@@ -343,4 +343,12 @@ Checked by the main Claude session on a copy of the repo at commit `58d9674`, Py
 - 63 unit tests and 5 integration tests pass. Combined coverage is 100% (unit tests alone: 87%).
 - The git history shows a red commit before each green commit for all four steps. In one case (`8a18ce1`), a new test was committed together with the implementation instead of separately.
 - The tool description matches REQUIREMENTS §7.1 exactly, and no `tool.call` line contains an employee name.
+
+### 7.4 M2 verification (2026-11-23)
+
+Checked by the main Claude session on a copy of branch `m2-get-policy-limits` at `b60659c`, Python 3.14.6:
+- `ruff format --check`, `ruff check` and `mypy --strict` all pass.
+- 106 unit tests and 14 integration tests pass. Coverage is 100%.
+- Each step has a red commit before its green commit.
+- Both tool descriptions match REQUIREMENTS §7.1 and §7.2 exactly. `"none"` and `null` reach the client as distinct values.
 

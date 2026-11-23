@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-23, milestone M1 (mock employee data, `get_employee_info` as a pure function, JSON logging, MCP server with `get_employee_info`)
+**Last updated:** 2026-11-23, milestone M1, verified (mock employee data, `get_employee_info` as a pure function, JSON logging, MCP server with `get_employee_info`)
 
 ---
 
@@ -275,4 +275,18 @@ Each entry: the decision, and why.
 - **Cause:** the `Employee` model's pattern was `^E\d{4}$`, and `\d` matches digits from every script. `employees.py` already used `[0-9]` in its own copy of the pattern, so the two checks disagreed.
 - **Evidence:** a reproduction case, `test_invalid_data_raises[non_ascii_digit_employee_id]`, failed with `DID NOT RAISE DataValidationError`.
 - **Fix:** one shared `EMPLOYEE_ID_PATTERN = r"^E[0-9]{4}$"` in `data.py`, imported by `employees.py`. The test now passes.
-- **Still open (docs):** `markdowns/prompts/M1.md` lines 126 and 175 still say `^E\d{4}$`.
+- **Docs:** `markdowns/prompts/M1.md` corrected to `^E[0-9]{4}$` (2026-11-23).
+
+### 7.2 Log values seen in the M1 demo (expected, not bugs)
+
+- **`"request_id": null` on every line.** A request ID belongs to one equipment request handled by the agent, and the agent doesn't exist until M5. In M5 the agent sets `request_id_var` and sends the ID to the server in the MCP call metadata, so server lines will carry it from then on.
+- **`tool.call` logs the raw input (`" e1001 "`), not the normalised ID.** This is deliberate (see the comment in `server.py`): a bad ID must be visible exactly as sent. The gap is that a successful call doesn't show which employee it resolved to. Adding a `resolved_employee_id` field is planned for M2, when the server is next changed.
+
+### 7.3 M1 verification (2026-11-23)
+
+Checked by the main Claude session on a copy of the repo at commit `58d9674`, Python 3.14.6:
+- `ruff format --check`, `ruff check` and `mypy --strict` all pass.
+- 63 unit tests and 5 integration tests pass. Combined coverage is 100% (unit tests alone: 87%).
+- The git history shows a red commit before each green commit for all four steps. In one case (`8a18ce1`), a new test was committed together with the implementation instead of separately.
+- The tool description matches REQUIREMENTS §7.1 exactly, and no `tool.call` line contains an employee name.
+

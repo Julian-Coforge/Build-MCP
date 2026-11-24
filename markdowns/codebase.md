@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-24, milestone M4 (`flag_for_human_review` as a plain function and as the fourth MCP tool; all four tools tested together). M1 to M4 are verified.
+**Last updated:** 2026-11-24, milestone M5 in progress (cost maths and the budget gate). M1 to M4 are verified.
 
 ---
 
@@ -17,11 +17,11 @@ Policy decisions are made by plain, tested Python functions. The LLM only interp
 
 ## 2. Current state
 
-M0 is done. In M1, the mock employee data, its validating loader and `get_employee_info` exist as plain functions with tests, as does the JSON logging module. The real MCP server exposes one tool, `get_employee_info`, over streamable HTTP, and `scripts/client_demo.py` calls it. In M2, the role-entitlement policy (`data/policy.json`) and its validating loader exist with tests, as does `get_policy_limits`, as a pure function and as the server's second MCP tool. In M3, `check_request_eligibility` exists as a pure function and as the server's third MCP tool. In M4, `flag_for_human_review` exists as a plain function with injected dependencies (the queue path and the current time), with tests, and is the server's fourth MCP tool. An integration test walks the T2 and T3 tool sequences through the real protocol. The agent comes in M5.
+M0 is done. In M1, the mock employee data, its validating loader and `get_employee_info` exist as plain functions with tests, as does the JSON logging module. The real MCP server exposes one tool, `get_employee_info`, over streamable HTTP, and `scripts/client_demo.py` calls it. In M2, the role-entitlement policy (`data/policy.json`) and its validating loader exist with tests, as does `get_policy_limits`, as a pure function and as the server's second MCP tool. In M3, `check_request_eligibility` exists as a pure function and as the server's third MCP tool. In M4, `flag_for_human_review` exists as a plain function with injected dependencies (the queue path and the current time), with tests, and is the server's fourth MCP tool. An integration test walks the T2 and T3 tool sequences through the real protocol. In M5, the agent package exists with its pure cost functions and budget gate (`agent/costs.py`). The LLM wrapper, tracing and the first live call come next.
 
 | File | What it does | Status |
 |---|---|---|
-| `src/it_requests/config.py` | `REFERENCE_DATE = 2026-11-22`, the fixed "today" for every policy check. `DATA_DIR`, `EMPLOYEES_FILE`, `POLICY_FILE` and `REVIEW_QUEUE_FILE`, resolved from the file's own location. | Tested |
+| `src/it_requests/config.py` | `REFERENCE_DATE = 2026-11-22`, the fixed "today" for every policy check. `REPO_ROOT`, and from it `DATA_DIR`, `EMPLOYEES_FILE`, `POLICY_FILE`, `REVIEW_QUEUE_FILE`, `LOGS_DIR`, `APP_LOG_FILE`, `COST_LEDGER_FILE` and `TRACES_DIR`. The models (`DEV_MODEL`, `EVAL_MODEL`), the price table (`ModelPrices`, `PRICES_PER_MTOK`, `PRICES_CHECKED`, Haiku long-prompt prices) and the budget limits (`BUDGET_USD_DEFAULT`, `BUDGET_WARN_USD`, `MAX_TOKENS_PER_CALL`). | Tested |
 | `data/employees.json` | The six employees from REQUIREMENTS §8, with fixed asset IDs. Top-level `data_version` (`employees-v1`) and `effective_date` (`2026-11-22`). | Tested (loads and validates) |
 | `data/policy.json` | The role-entitlement matrix from REQUIREMENTS §4.1: 4 roles × 6 items, each with `max` and `refresh_months`. Top-level `data_version` (`policy-v1`) and `effective_date`. | Tested (loads and validates) |
 | `src/it_requests/data.py` | Pydantic models (`EquipmentItem`, `Employee`, `EmployeeDirectory`), the `Role`, `Status` and `CatalogItem` literals, the `ROLES` and `CATALOG_ITEMS` tuples, `EMPLOYEE_ID_PATTERN`, `DataValidationError` and `load_employees(path)`. Policy models (`ItemLimit`, `PolicyTable`) and `load_policy(path)`. | Tested, 100% coverage |
@@ -29,6 +29,7 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 | `src/it_requests/policy.py` | `normalize_role` and `get_policy_limits`: the pure function behind the MCP tool (REQUIREMENTS §7.2). | Tested, 100% coverage |
 | `src/it_requests/eligibility.py` | `add_months` and `check_request_eligibility`: the REQUIREMENTS §4.3 algorithm, the only source of truth for eligibility. | Tested, 100% coverage |
 | `src/it_requests/reviews.py` | `ESCALATION_CODES`, `parse_reason` and `flag_for_human_review`: the only side-effecting tool, which appends review tickets to a JSON queue file (REQUIREMENTS §2.3, §7.4). | Tested, 94% coverage (write-failure path untested); used by `server.py` |
+| `src/it_requests/agent/costs.py` | `cost_usd`, `ledger_total`, `check_budget` and `budget_from_env`, with `UnknownModelError`, `LedgerCorruptError` and `BudgetExceededError`: pure cost maths and the budget gate (PLAN §4). | Tested, 100% coverage; not yet called by any component |
 | `src/it_requests/observability.py` | `request_id_var`, `REDACTED_KEYS`, `JsonFormatter`, `log_event` and `configure_logging`: structured JSON logging for the server and, later, the agent (PLAN §5). | Tested, 100% coverage; used by `server.py` |
 | `src/it_requests/server.py` | `build_server(directory, policy_table, *, as_of)` registers all four tools (`get_employee_info`, `get_policy_limits`, `check_request_eligibility`, `flag_for_human_review`) as thin wrappers. Both log through one helper, `_call_and_log`. `main()` configures logging, loads both data files, logs `server.start` and serves on `http://127.0.0.1:8000/mcp`. | Integration-tested in-process; `main()` checked by hand |
 | `scripts/client_demo.py` | Connects over HTTP, lists the tools, calls `get_employee_info` for `E1001`, `" e1001 "` and `E9999`, then calls `get_policy_limits` for `standard`, `Manager` and `intern`, then calls `check_request_eligibility` for five cases, one per kind of verdict plus an unknown item, then calls `flag_for_human_review` three times: a new ticket, the same call again (duplicate) and an invalid reason (screenshot for deliverable #2). | Checked by hand |
@@ -113,6 +114,21 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
   - An unreadable file, or one with the wrong shape (no `tickets` list, or a ticket missing a string field), returns `QUEUE_UNAVAILABLE`, and the file is left untouched.
   - A failed write also returns `QUEUE_UNAVAILABLE`.
 
+### `agent/costs.py` in detail
+
+- **`cost_usd(model, input_tokens, output_tokens, cache_read_tokens=0, cache_write_tokens=0)`:**
+  - Prices each token kind separately from `config.PRICES_PER_MTOK`, and rounds to 6 decimals.
+  - `input_tokens` means uncached input only, as the API reports it.
+  - If a Haiku prompt's total input (uncached + cache read + cache write) is above 100K tokens, the whole call uses `HAIKU_LONG_PRICES`. Exactly 100K uses the normal prices.
+  - An unknown model raises `UnknownModelError`. That is a programming error, not a tool result.
+- **`ledger_total(path)`:**
+  - Sums `cost_usd` over every line of the JSONL ledger. A missing file is $0, and blank lines are skipped.
+  - Any line that isn't a JSON object with a numeric `cost_usd` raises `LedgerCorruptError` naming the line number. `true` counts as non-numeric.
+- **`check_budget(spent, *, budget, warn_at)`:** returns `"warn"` at or above `warn_at`, otherwise `"ok"`. It raises `BudgetExceededError` at or above `budget`. It does no logging; the caller logs.
+- **`budget_from_env(environ)`:**
+  - Reads `BUDGET_USD`, defaulting to $4.00.
+  - A non-numeric, negative, `nan` or `inf` value raises `ValueError`. `0` is allowed, and means "refuse every run".
+
 ### `observability.py` in detail
 
 - **`log_event(logger, event, level=INFO, **fields)`:** the one helper every call site uses. It passes `fields` to the formatter through `extra={"fields": ...}`.
@@ -162,12 +178,15 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 Build-MCP/
 ├── src/it_requests/        # the installable package (all business logic lives here)
 │   ├── __init__.py
-│   ├── config.py           # shared constants (REFERENCE_DATE, DATA_DIR, EMPLOYEES_FILE, POLICY_FILE)
+│   ├── config.py           # shared constants: dates, paths, models, prices, budget limits
 │   ├── data.py             # Pydantic data models, load_employees and load_policy
 │   ├── employees.py        # get_employee_info and its helpers (pure)
 │   ├── policy.py           # get_policy_limits and normalize_role (pure)
 │   ├── eligibility.py      # check_request_eligibility and add_months (pure)
 │   ├── reviews.py          # flag_for_human_review and parse_reason (writes the review queue)
+│   ├── agent/
+│   │   ├── __init__.py
+│   │   └── costs.py        # cost_usd, ledger_total, check_budget, budget_from_env (pure)
 │   ├── observability.py    # JSON logging: log_event, configure_logging
 │   ├── server.py           # MCP server: build_server (thin tool wrappers) and main
 │   └── py.typed            # marks the package as typed for mypy
@@ -175,7 +194,7 @@ Build-MCP/
 │   ├── employees.json      # mock employees (REQUIREMENTS §8)
 │   └── policy.json         # role entitlements (REQUIREMENTS §4.1)
 ├── tests/
-│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability
+│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs
 │   └── integration/        # conftest (server, server_log), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools
 ├── scripts/
 │   └── client_demo.py      # calls the running server over HTTP
@@ -404,6 +423,24 @@ Each entry: the decision, and why.
 57. **`make reset-reviews` deletes `data/review_queue.json`.**
     *Why:* the demo then starts clean, so its first ticket is `REV-0001` and the duplicate call is easy to see. The queue is gitignored runtime output.
 
+58. **Prices live in `config.py` as frozen `ModelPrices` records, with the date they were checked.**
+    *Why:* named fields can't be read from the wrong position, as a bare tuple could. Prices change, and the ledger is only as right as this table, so the date shows how stale it might be (PLAN §4).
+
+59. **The cost functions are pure: no network, no SDK and no logging.**
+    *Why:* every cost and budget rule is unit-tested without spending anything. The LLM wrapper and the run start-up do the I/O and the logging.
+
+60. **A corrupt ledger line raises `LedgerCorruptError` instead of being skipped.**
+    *Why:* if the ledger can't be read, total spend is unknown. Skipping lines would undercount spend and could let runs continue past the budget, so the gate refuses to run until a human fixes the file.
+
+61. **The budget gate refuses at exactly the budget (`>=`).**
+    *Why:* the run that would cross the line is refused, so real spend stays near $4.00, not well above it. The warning also starts at exactly $3.00. The M5 prompt asked for that, whereas PLAN §4 says "passes $3.00".
+
+62. **`budget_from_env` rejects `nan` and `inf`.**
+    *Why:* both parse as floats and aren't negative, but either would switch the gate off: `spent >= nan` is always False, and no spend reaches `inf`.
+
+63. **The Haiku long-prompt tier counts cached tokens toward the 100K threshold, and keeps the normal cache prices.**
+    *Why:* the tier depends on the whole prompt's size. The price source gives long-prompt input and output prices only, so the cache prices are unchanged. This was flagged in the red step.
+
 ## 6. Change log
 
 | Date | Milestone | Change | Why |
@@ -439,6 +476,7 @@ Each entry: the decision, and why.
 | 2026-11-24 | M4 | Failing integration tests for the `flag_for_human_review` tool and an all-tools walk-through; `review_queue_path` and fixed-clock fixtures | TDD red step |
 | 2026-11-24 | M4 | `flag_for_human_review` MCP tool (injected queue path and clock), `REVIEW_QUEUE_FILE`, `make reset-reviews`, client demo review section | All four tools exposed over MCP and proven end to end over HTTP |
 | 2026-11-24 | M5 | Failing tests for cost maths and the budget gate (`test_costs.py`) | TDD red step |
+| 2026-11-24 | M5 | `config.py`: `REPO_ROOT`, log and trace paths, models, price table, budget limits. New `agent/` package with `costs.py` | Cost transparency and the budget gate, before any paid call |
 
 ## 7. Known issues and fixes
 

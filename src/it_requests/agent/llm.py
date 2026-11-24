@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from anthropic.types import Message
+from anthropic.types import Message, Usage
 from opentelemetry.trace import Tracer
 
 from it_requests import config
@@ -39,6 +39,22 @@ class CreateMessage(Protocol):
     def __call__(self, **kwargs: Any) -> Message: ...
 
 
+def usage_numbers(model: str, usage: Usage) -> dict[str, Any]:
+    """Token counts and cost for one response, as written to the ledger, span and logs.
+
+    One function for every caller, so a run's reported cost always equals its ledger line.
+    """
+    numbers: dict[str, Any] = {
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        # The API may send null for these; that means no cache use, so 0.
+        "cache_read_tokens": usage.cache_read_input_tokens or 0,
+        "cache_write_tokens": usage.cache_creation_input_tokens or 0,
+    }
+    numbers["cost_usd"] = costs.cost_usd(model, **numbers)
+    return numbers
+
+
 class LLMClient:
     """Send one model request, and record its tokens, cost, latency and span."""
 
@@ -62,6 +78,10 @@ class LLMClient:
         self._tracer = tracer
         self._logger = logger
         self._clock = clock  # monotonic, for latency only
+
+    @property
+    def model(self) -> str:
+        return self._model
 
     def call(
         self,
@@ -97,15 +117,7 @@ class LLMClient:
             )
             latency_ms = round((self._clock() - start) * 1000, 1)
 
-            usage = response.usage
-            numbers: dict[str, Any] = {
-                "input_tokens": usage.input_tokens,
-                "output_tokens": usage.output_tokens,
-                # The API may send null for these; that means no cache use, so 0.
-                "cache_read_tokens": usage.cache_read_input_tokens or 0,
-                "cache_write_tokens": usage.cache_creation_input_tokens or 0,
-            }
-            numbers["cost_usd"] = costs.cost_usd(self._model, **numbers)
+            numbers = usage_numbers(self._model, response.usage)
             numbers["latency_ms"] = latency_ms
             stop_reason = response.stop_reason
 

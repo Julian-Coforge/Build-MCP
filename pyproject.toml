@@ -21,6 +21,9 @@ dependencies = [
     # (Message, Usage) are read field by field for the cost ledger, and the test fakes build
     # the SDK's own types, so an unannounced field change must not slip in with an upgrade.
     "anthropic==2.13.0",
+    # Loads ANTHROPIC_API_KEY and BUDGET_USD from .env in scripts/agent_once.py, so the key
+    # lives in one gitignored file and never in code or shell history.
+    "python-dotenv==1.2.4",
 ]
 
 [project.scripts]

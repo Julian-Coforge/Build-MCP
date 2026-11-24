@@ -1,6 +1,6 @@
 # Run from an activated virtualenv (source .venv/bin/activate).
 # `make check` runs the same steps as CI, in the same fast-to-slow order.
-.PHONY: install format lint type test audit check serve client-demo reset-reviews
+.PHONY: install format lint type test audit check serve client-demo reset-reviews agent-once cost-report
 
 install:
 	python -m pip install -e ".[dev]"
@@ -34,3 +34,11 @@ client-demo:
 # Delete the review queue, so the demo starts clean and its first ticket is REV-0001.
 reset-reviews:
 	rm -f data/review_queue.json
+
+# One PAID model call (Haiku by default): Claude picks one tool, run on the live server.
+agent-once:
+	python scripts/agent_once.py
+
+# Spend so far from logs/cost_ledger.jsonl: total, by env, stage and request, and budget left.
+cost-report:
+	python -m it_requests.cost_report

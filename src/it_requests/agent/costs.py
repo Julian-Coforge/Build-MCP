@@ -8,7 +8,7 @@ import json
 import math
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from it_requests import config
 
@@ -58,15 +58,16 @@ def cost_usd(
     return round(dollars, 6)
 
 
-def ledger_total(path: Path) -> float:
-    """Sum cost_usd over every line of the JSONL ledger. A missing file means $0 spent.
+def read_ledger(path: Path) -> list[dict[str, Any]]:
+    """Every entry of the JSONL ledger, each checked to have a numeric cost_usd.
 
-    Any unreadable line raises LedgerCorruptError: if we can't read the ledger we don't
-    know what has been spent, so the safe answer is to refuse to run, not to guess 0.
+    A missing file means no entries. Any unreadable line raises LedgerCorruptError naming
+    the line: if we can't read the ledger we don't know what has been spent, so the safe
+    answer is to refuse to run, not to guess.
     """
     if not path.exists():
-        return 0.0
-    total = 0.0
+        return []
+    entries: list[dict[str, Any]] = []
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line.strip():
             continue  # blank lines (e.g. a trailing newline) carry no cost
@@ -78,8 +79,16 @@ def ledger_total(path: Path) -> float:
         # bool is a subclass of int in Python, so `true` would otherwise count as $1.
         if isinstance(cost, bool) or not isinstance(cost, int | float):
             raise LedgerCorruptError(f"{path} line {number}: no numeric cost_usd")
-        total += cost
-    return total
+        entries.append(record)
+    return entries
+
+
+def ledger_total(path: Path) -> float:
+    """Sum cost_usd over the ledger. A missing file means $0 spent; a bad line raises.
+
+    Built on read_ledger, so the budget gate and the cost report apply the same checks.
+    """
+    return float(sum(entry["cost_usd"] for entry in read_ledger(path)))
 
 
 def check_budget(spent: float, *, budget: float, warn_at: float) -> BudgetStatus:

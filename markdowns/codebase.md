@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-24, milestone M5 in progress (cost maths, the budget gate, tracing and the LLM wrapper). M1 to M4 are verified.
+**Last updated:** 2026-11-24, milestone M5 (cost maths, the budget gate, tracing, the LLM wrapper and the agent's single tool call; the first live call is still to be run). M1 to M4 are verified.
 
 ---
 
@@ -17,7 +17,7 @@ Policy decisions are made by plain, tested Python functions. The LLM only interp
 
 ## 2. Current state
 
-M0 is done. In M1, the mock employee data, its validating loader and `get_employee_info` exist as plain functions with tests, as does the JSON logging module. The real MCP server exposes one tool, `get_employee_info`, over streamable HTTP, and `scripts/client_demo.py` calls it. In M2, the role-entitlement policy (`data/policy.json`) and its validating loader exist with tests, as does `get_policy_limits`, as a pure function and as the server's second MCP tool. In M3, `check_request_eligibility` exists as a pure function and as the server's third MCP tool. In M4, `flag_for_human_review` exists as a plain function with injected dependencies (the queue path and the current time), with tests, and is the server's fourth MCP tool. An integration test walks the T2 and T3 tool sequences through the real protocol. In M5, the agent package exists with its pure cost functions and budget gate (`agent/costs.py`). OpenTelemetry tracing writes spans to JSON-lines files, and every log line carries the active `trace_id` and `span_id`. `LLMClient` (`agent/llm.py`) is the one wrapper every model call goes through: it records tokens, cost, latency and a span for each call, and is tested only with a fake. The first live call comes next.
+M0 is done. In M1, the mock employee data, its validating loader and `get_employee_info` exist as plain functions with tests, as does the JSON logging module. The real MCP server exposes one tool, `get_employee_info`, over streamable HTTP, and `scripts/client_demo.py` calls it. In M2, the role-entitlement policy (`data/policy.json`) and its validating loader exist with tests, as does `get_policy_limits`, as a pure function and as the server's second MCP tool. In M3, `check_request_eligibility` exists as a pure function and as the server's third MCP tool. In M4, `flag_for_human_review` exists as a plain function with injected dependencies (the queue path and the current time), with tests, and is the server's fourth MCP tool. An integration test walks the T2 and T3 tool sequences through the real protocol. In M5, the agent package exists with its pure cost functions and budget gate (`agent/costs.py`). OpenTelemetry tracing writes spans to JSON-lines files, and every log line carries the active `trace_id` and `span_id`. `LLMClient` (`agent/llm.py`) is the one wrapper every model call goes through: it records tokens, cost, latency and a span for each call, and is tested only with a fake. The agent connects to the MCP server as a client, gives Claude the server's tools and runs the one tool call Claude picks for a hardcoded request (brief step 5a): tested end to end with the fake and the in-process server. `scripts/agent_once.py` makes the real, paid call; it has not been run yet. `python -m it_requests.cost_report` prints spend from the ledger.
 
 | File | What it does | Status |
 |---|---|---|
@@ -32,6 +32,11 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 | `src/it_requests/agent/costs.py` | `cost_usd`, `ledger_total`, `check_budget` and `budget_from_env`, with `UnknownModelError`, `LedgerCorruptError` and `BudgetExceededError`: pure cost maths and the budget gate (PLAN §4). | Tested, 100% coverage; not yet called by any component |
 | `src/it_requests/agent/llm.py` | `LLMClient` (the one wrapper for paid model calls) and the `CreateMessage` protocol. Each call writes a cost-ledger line, an `llm.call` span and an `llm.call` log line. | Tested with a fake, 100% coverage; not yet called by any component |
 | `src/it_requests/agent/prompts.py` | `PROMPT_VERSION` (`m5-v1`) and `SYSTEM_PROMPT_SINGLE_CALL`. | Covered by the `LLMClient` tests |
+| `src/it_requests/agent/mcp_bridge.py` | `MCPToolClient` protocol, `to_claude_tools` (MCP tool list to Claude tool definitions) and `call_tool` (one tool call with `request_id` and `traceparent` in `_meta`). | Tested, 100% coverage |
+| `src/it_requests/agent/single_call.py` | `run_single_tool_call`: one model call, then the one tool call Claude picks, run on the server, inside an `agent.run` trace. | Integration-tested with the fake and the in-process server, 100% coverage |
+| `src/it_requests/cost_report.py` | `summarise`, `format_report` and `main`: spend from the cost ledger, in total and by env, stage and request, plus the budget left. | Tested, 100% coverage |
+| `scripts/agent_once.py` | The live, paid entry point. Loads `.env`, runs the budget gate first, then makes one real Haiku call against the running server and prints the tool, arguments, result status, cost and trace path. | Not unit-tested (thin wiring of tested parts); type-checks with `mypy --strict`; not yet run |
+| `.env.example` | Placeholder `ANTHROPIC_API_KEY` and `BUDGET_USD=4.00`. Copied to the gitignored `.env`. | Committed; no real key |
 | `src/it_requests/tracing.py` | `JsonLinesSpanExporter` and `make_tracer`: OpenTelemetry spans written as JSON lines to `traces/<request_id>.jsonl` (PLAN §6). | Tested, 97% coverage (an unused `force_flush` return); not yet called by any component |
 | `src/it_requests/observability.py` | `request_id_var`, `REDACTED_KEYS`, `JsonFormatter`, `log_event` and `configure_logging`: structured JSON logging for the server and, later, the agent (PLAN §5). | Tested, 100% coverage; used by `server.py` |
 | `src/it_requests/server.py` | `build_server(directory, policy_table, *, as_of)` registers all four tools (`get_employee_info`, `get_policy_limits`, `check_request_eligibility`, `flag_for_human_review`) as thin wrappers. Both log through one helper, `_call_and_log`. `main()` configures logging, loads both data files, logs `server.start` and serves on `http://127.0.0.1:8000/mcp`. | Integration-tested in-process; `main()` checked by hand |
@@ -124,9 +129,10 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
   - `input_tokens` means uncached input only, as the API reports it.
   - If a Haiku prompt's total input (uncached + cache read + cache write) is above 100K tokens, the whole call uses `HAIKU_LONG_PRICES`. Exactly 100K uses the normal prices.
   - An unknown model raises `UnknownModelError`. That is a programming error, not a tool result.
-- **`ledger_total(path)`:**
-  - Sums `cost_usd` over every line of the JSONL ledger. A missing file is $0, and blank lines are skipped.
+- **`read_ledger(path)`:**
+  - Returns every entry of the JSONL ledger. A missing file gives no entries, and blank lines are skipped.
   - Any line that isn't a JSON object with a numeric `cost_usd` raises `LedgerCorruptError` naming the line number. `true` counts as non-numeric.
+- **`ledger_total(path)`:** the sum of `cost_usd` over `read_ledger(path)`. The budget gate and the cost report therefore apply the same checks.
 - **`check_budget(spent, *, budget, warn_at)`:** returns `"warn"` at or above `warn_at`, otherwise `"ok"`. It raises `BudgetExceededError` at or above `budget`. It does no logging; the caller logs.
 - **`budget_from_env(environ)`:**
   - Reads `BUDGET_USD`, defaulting to $4.00.
@@ -156,6 +162,28 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
   - **Ledger:** appends one line to the cost ledger with `ts`, `request_id`, `run_id`, `stage`, `model`, `prompt_version`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `cost_usd`, `latency_ms`, `env` and `stop_reason`. `null` cache counts are recorded as 0.
   - **Log:** logs `llm.call` at INFO with the same numbers. It never logs messages, the system prompt, tools or the request text.
   - **Failure:** if `create` raises, the span is marked `ERROR`, no ledger line is written, and the exception propagates. There is no retry, because the SDK already retries.
+
+### `agent/mcp_bridge.py` and `agent/single_call.py` in detail
+
+- **`to_claude_tools(listed)`:** maps each MCP tool to `{name, description, input_schema}`. A missing description becomes `""`. MCP-only fields such as `title` and `output_schema` are dropped.
+- **`call_tool(client, name, arguments, *, request_id, traceparent)`:**
+  - Calls the server with `meta={"request_id": ..., "traceparent": ...}`, and returns `structured_content`.
+  - `is_error`, or no structured content, returns `{"error": "TOOL_CALL_FAILED", "tool": name}`.
+  - A tool's own error dict passes through unchanged.
+- **`run_single_tool_call(request_text, *, request_id, llm, mcp_client, tracer, logger)`:**
+  - Sets `request_id_var` for the run and opens an `agent.run` root span, with `request_id`, a fresh `run_id`, `prompt_version` and `model`.
+  - Logs `run.start`, and logs the request text at DEBUG only.
+  - Lists the server's tools and makes one `llm.call` (stage `single_call`).
+  - Takes the first `tool_use` block. If there is none, it returns `{"error": "NO_TOOL_CALL", ...}` and nothing is sent to the server.
+  - Otherwise it runs that tool in a `tool.<name>` child span, sending that span's `traceparent`. The span records `tool`, `arguments` (as JSON, with `request` and `reason` redacted), `result_status` and `data_version` when present. It never records the result.
+  - Logs `run.end` with the tool, result status, `cost_usd` and tokens, and sets `total_cost_usd` and `total_tokens` on the root span.
+  - Returns `request_id`, `run_id`, `tool`, `arguments`, `result_status`, `result` and `cost_usd`.
+
+### `cost_report.py` in detail
+
+- **`summarise(entries, *, budget)`:** pure. Returns a `CostSummary` with `total`, `calls`, `by_env`, `by_stage`, `by_request`, `budget` and `remaining`. A missing key is grouped under `"unknown"`. `remaining` can be negative, so an overspend shows.
+- **`format_report(summary)`:** the text report, to 4 decimals, with the biggest spend first in each section.
+- **`main(*, ledger_path=None, environ=None)`:** reads the ledger with `read_ledger`, takes the budget from `BUDGET_USD`, and prints the report. The parameters let tests use a tmp ledger.
 
 ### `tracing.py` in detail
 
@@ -214,7 +242,10 @@ Build-MCP/
 │   │   ├── __init__.py
 │   │   ├── costs.py        # cost_usd, ledger_total, check_budget, budget_from_env (pure)
 │   │   ├── llm.py          # LLMClient: every model call, with ledger, span and log
-│   │   └── prompts.py      # PROMPT_VERSION and system prompts
+│   │   ├── prompts.py      # PROMPT_VERSION and system prompts
+│   │   ├── mcp_bridge.py   # MCP tools to Claude tool definitions; call one tool
+│   │   └── single_call.py  # run_single_tool_call (brief step 5a)
+│   ├── cost_report.py      # python -m it_requests.cost_report
 │   ├── observability.py    # JSON logging: log_event, configure_logging
 │   ├── tracing.py          # OpenTelemetry spans to traces/<request_id>.jsonl
 │   ├── server.py           # MCP server: build_server (thin tool wrappers) and main
@@ -224,16 +255,18 @@ Build-MCP/
 │   └── policy.json         # role entitlements (REQUIREMENTS §4.1)
 ├── tests/
 │   ├── conftest.py         # FakeMessages: a fake Anthropic messages API (real SDK types)
-│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm
-│   └── integration/        # conftest (server, server_log), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools
+│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report
+│   └── integration/        # conftest (server, server_log), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools, test_agent_single_call
 ├── scripts/
-│   └── client_demo.py      # calls the running server over HTTP
+│   ├── client_demo.py      # calls the running server over HTTP
+│   └── agent_once.py       # one live, paid agent run (brief step 5a)
 ├── examples/step1/         # brief step-1 demo (do not modify)
 ├── markdowns/              # REQUIREMENTS, PLAN, codebase, MILESTONES, prompts/
 ├── .github/workflows/ci.yml
 ├── pyproject.toml          # package metadata, dependencies, tool configuration
 ├── Makefile                # `make check` = the same steps as CI
 ├── CLAUDE.md               # instructions for coding agents
+├── .env.example          # placeholder keys; copy to the gitignored .env
 └── .gitignore
 ```
 
@@ -271,6 +304,15 @@ make serve          # terminal 1: serves on http://127.0.0.1:8000/mcp, logs to s
 make reset-reviews  # optional: empty the review queue so the demo's first ticket is REV-0001
 make client-demo    # terminal 2: lists tools, calls all four tools
 ```
+
+**Agent, one live tool call** (paid: well under $0.01 on Haiku, an estimate; needs `.env` with a real `ANTHROPIC_API_KEY`):
+```bash
+cp .env.example .env    # once, then put your key in .env
+make serve              # terminal 1
+make agent-once         # terminal 2: budget gate, one Haiku call, one tool call on the server
+make cost-report        # spend so far from logs/cost_ledger.jsonl
+```
+`python scripts/agent_once.py --model claude-sonnet-5-5 --env eval` uses Sonnet. The trace goes to `traces/REQ-0501.jsonl`.
 
 **Step-1 demo server and client:**
 ```bash
@@ -510,6 +552,27 @@ Each entry: the decision, and why.
 76. **The test fake builds real `anthropic.types.Message` objects, and lives in `tests/conftest.py`.**
     *Why:* a field-name mistake (for example `usage.cache_read_tokens`) fails the test, where a dict or `MagicMock` would quietly return a value. It sits at the top of `tests/`, so unit and integration tests can share it.
 
+77. **The agent sends `request_id` and a W3C `traceparent` in each MCP call's `_meta`.**
+    *Why:* PLAN §5 asked M5 to verify that SDK 2.3 supports this. It does: `RequestParamsMeta` is an open TypedDict, and an integration test proves the values are sent. The `traceparent` names the tool span, so a server span added later joins under the call that caused it. The server doesn't read `_meta` yet.
+
+78. **Spans and logs never hold a tool's result, and free-text arguments (`request`, `reason`) are redacted in spans.**
+    *Why:* `get_employee_info` returns the employee's name, and a request is the employee's own words. An integration test reads E1002's name from the data file and checks it appears nowhere in the trace, ledger or logs.
+
+79. **A reply with no `tool_use` returns `NO_TOOL_CALL` and sends nothing to the server.**
+    *Why:* the model must not decide anything in M5. If it answers in prose, nothing is run on its behalf, and the outcome is reported as data.
+
+80. **`usage_numbers` is shared by `LLMClient` and the run summary.**
+    *Why:* the cost a run reports (`run.end`, the result's `cost_usd` and the root span) always equals its ledger line. A test checks they match.
+
+81. **`read_ledger` was split out of `ledger_total`.**
+    *Why:* the cost report needs the entries, not just the sum, and both must apply the same corrupt-line checks. It was a refactor with tests green, and the existing `ledger_total` tests passed unchanged.
+
+82. **`scripts/agent_once.py` runs the budget gate before creating the Anthropic client.**
+    *Why:* a refused run must spend nothing. The script stays thin and outside the package: every part it wires together is tested, and it type-checks with `mypy --strict`. It is run by hand only, because it is a paid call.
+
+83. **`python-dotenv` loads `.env`, and the API key is never read by our code.**
+    *Why:* `anthropic.Anthropic()` reads `ANTHROPIC_API_KEY` itself, so the key never passes through code that could print or log it (CLAUDE.md). `.env.example` is committed with placeholders only.
+
 ## 6. Change log
 
 | Date | Milestone | Change | Why |
@@ -551,6 +614,7 @@ Each entry: the decision, and why.
 | 2026-11-24 | M5 | Failing tests for `LLMClient` (`test_llm.py`); shared `FakeMessages` fake in `tests/conftest.py`; `anthropic==2.13.0` pinned and installed so the fake can build real SDK types | TDD red step |
 | 2026-11-24 | M5 | `agent/llm.py` (`LLMClient`, `CreateMessage`) and `agent/prompts.py` (`PROMPT_VERSION`, `SYSTEM_PROMPT_SINGLE_CALL`) | One wrapper for every paid model call, so cost tracking and tracing can't be bypassed |
 | 2026-11-24 | M5 | Failing tests for the MCP bridge, the cost report and the agent's single tool call (`test_mcp_bridge.py`, `test_cost_report.py`, `test_agent_single_call.py`); `anyio_backend` fixture moved to `tests/conftest.py` | TDD red step |
+| 2026-11-24 | M5 | `agent/mcp_bridge.py`, `agent/single_call.py`, `cost_report.py`, `read_ledger` and `usage_numbers` refactors, `scripts/agent_once.py`, `.env.example`, `python-dotenv` pin, `make agent-once` and `make cost-report` | Brief step 5a: the agent makes one tool call through MCP; the live run is ready for Julian |
 
 ## 7. Known issues and fixes
 

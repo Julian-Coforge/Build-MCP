@@ -17,6 +17,10 @@ dependencies = [
     # installed opentelemetry-api version (which mcp pulls in): the SDK and the API are
     # released together, and a mismatched pair can fail at import or drop spans.
     "opentelemetry-sdk==1.45.2",
+    # Claude API client for the agent (agent/llm.py). Pinned exactly: the response types
+    # (Message, Usage) are read field by field for the cost ledger, and the test fakes build
+    # the SDK's own types, so an unannounced field change must not slip in with an upgrade.
+    "anthropic==2.13.0",
 ]
 
 [project.scripts]

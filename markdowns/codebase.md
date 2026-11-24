@@ -511,6 +511,7 @@ Each entry: the decision, and why.
 | 2026-11-24 | M5 | `config.py`: `REPO_ROOT`, log and trace paths, models, price table, budget limits. New `agent/` package with `costs.py` | Cost transparency and the budget gate, before any paid call |
 | 2026-11-24 | M5 | Failing tests for the span exporter and log-trace correlation (`test_tracing.py`, `test_observability.py`); `opentelemetry-sdk==1.45.2` pinned and installed so the tests can create real spans | TDD red step |
 | 2026-11-24 | M5 | `tracing.py` (`JsonLinesSpanExporter`, `make_tracer`); `trace_id` and `span_id` in every log line | Traces per request, cross-referenced with logs (PLAN §5, §6) |
+| 2026-11-24 | M5 | Failing tests for `LLMClient` (`test_llm.py`); shared `FakeMessages` fake in `tests/conftest.py`; `anthropic==2.13.0` pinned and installed so the fake can build real SDK types | TDD red step |
 
 ## 7. Known issues and fixes
 

@@ -13,6 +13,10 @@ dependencies = [
     # Imported directly by it_requests.data for the data models. Declared explicitly so we
     # don't rely on it arriving only as a dependency of mcp.
     "pydantic>=2.14,<3",
+    # Writes trace spans to traces/<request_id>.jsonl (PLAN §6). Pinned to exactly the
+    # installed opentelemetry-api version (which mcp pulls in): the SDK and the API are
+    # released together, and a mismatched pair can fail at import or drop spans.
+    "opentelemetry-sdk==1.45.2",
 ]
 
 [project.scripts]

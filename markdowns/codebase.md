@@ -477,6 +477,7 @@ Each entry: the decision, and why.
 | 2026-11-24 | M4 | `flag_for_human_review` MCP tool (injected queue path and clock), `REVIEW_QUEUE_FILE`, `make reset-reviews`, client demo review section | All four tools exposed over MCP and proven end to end over HTTP |
 | 2026-11-24 | M5 | Failing tests for cost maths and the budget gate (`test_costs.py`) | TDD red step |
 | 2026-11-24 | M5 | `config.py`: `REPO_ROOT`, log and trace paths, models, price table, budget limits. New `agent/` package with `costs.py` | Cost transparency and the budget gate, before any paid call |
+| 2026-11-24 | M5 | Failing tests for the span exporter and log-trace correlation (`test_tracing.py`, `test_observability.py`); `opentelemetry-sdk==1.45.2` pinned and installed so the tests can create real spans | TDD red step |
 
 ## 7. Known issues and fixes
 

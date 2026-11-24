@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-24, milestone M6 in progress (failing tests for the constraint guards, `test_guards.py`; `agent/guards.py` not written yet). M1 to M5 are verified.
+**Last updated:** 2026-11-24, milestone M6 in progress (constraint guards in `agent/guards.py`; the ReAct loop is still to come). M1 to M5 are verified.
 
 ---
 
@@ -34,6 +34,7 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 | `src/it_requests/agent/prompts.py` | `PROMPT_VERSION` (`m5-v1`) and `SYSTEM_PROMPT_SINGLE_CALL`. | Covered by the `LLMClient` tests |
 | `src/it_requests/agent/mcp_bridge.py` | `MCPToolClient` protocol, `to_claude_tools` (MCP tool list to Claude tool definitions) and `call_tool` (one tool call with `request_id` and `traceparent` in `_meta`). | Tested, 100% coverage |
 | `src/it_requests/agent/single_call.py` | `run_single_tool_call`: one model call, then the one tool call Claude picks, run on the server, inside an `agent.run` trace. | Integration-tested with the fake and the in-process server, 100% coverage |
+| `src/it_requests/agent/guards.py` | `check_tool_call` (C6, C7 before a call), `check_final_answer` (C1, C2, C3, required calls, C7 on the answer) and `violation_message`. Pure. | Unit-tested against results from the real tool functions, 100% coverage |
 | `src/it_requests/cost_report.py` | `summarise`, `format_report` and `main`: spend from the cost ledger, in total and by env, stage and request, plus the budget left. | Tested, 100% coverage |
 | `scripts/agent_once.py` | The live, paid entry point. Loads `.env`, runs the budget gate first, then makes one real Haiku call against the running server and prints the tool, arguments, result status, cost and trace path. | Not unit-tested (thin wiring of tested parts); type-checks with `mypy --strict`; not yet run |
 | `.env.example` | Placeholder `ANTHROPIC_API_KEY` and `BUDGET_USD=4.00`. Copied to the gitignored `.env`. | Committed; no real key |
@@ -179,6 +180,18 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
   - Logs `run.end` with the tool, result status, `cost_usd` and tokens, and sets `total_cost_usd` and `total_tokens` on the root span.
   - Returns `request_id`, `run_id`, `tool`, `arguments`, `result_status`, `result` and `cost_usd`.
 
+### `agent/guards.py` in detail
+
+- **`Observation(tool, arguments, result)`** and **`FinalAnswer(*, decision, rule_id, review_id=None, reason_code=None, draft_reply=None)`:** frozen dataclasses. `FinalAnswer` is keyword-only, and `rule_id` must be given but may be `None`.
+- **`check_tool_call(tool, observations)`:** returns `"C6_STEP_LIMIT"` when 8 investigation calls are already made (failed ones count; the flag does not), `"C7_ALREADY_FLAGGED"` when a flag already returned a `review_id`, else `None`.
+- **`check_final_answer(answer, observations)`:** returns every violation, in the order C1, C2, C3, `REQUIRED_CALLS`, C7.
+  - Approve and deny read the **latest** successful eligibility result (`status`, `rule_id`).
+  - Deny and escalate need the rule ID or review ID in `draft_reply` as a whole token, so `R-REFRESH` is not matched inside `R-REFRESH-OK`.
+  - Escalate compares against the first flag that returned a `review_id`. E7 also needs a successful `get_employee_info` and `check_request_eligibility` before that flag.
+  - Error results never satisfy `REQUIRED_CALLS`.
+- **`violation_message(codes)`:** one sentence per code, joined, for the loop to send back to the model. An unknown code raises `KeyError`, because that is a bug in the loop.
+- **Not checked yet:** that an E7 check returned `NOT_ELIGIBLE` (§5), and that the answer's `reason_code` matches the flag's.
+
 ### `cost_report.py` in detail
 
 - **`summarise(entries, *, budget)`:** pure. Returns a `CostSummary` with `total`, `calls`, `by_env`, `by_stage`, `by_request`, `budget` and `remaining`. A missing key is grouped under `"unknown"`. `remaining` can be negative, so an overspend shows.
@@ -243,6 +256,7 @@ Build-MCP/
 │   │   ├── costs.py        # cost_usd, ledger_total, check_budget, budget_from_env (pure)
 │   │   ├── llm.py          # LLMClient: every model call, with ledger, span and log
 │   │   ├── prompts.py      # PROMPT_VERSION and system prompts
+│   │   ├── guards.py       # C1-C3, C6, C7 and required-call checks (pure)
 │   │   ├── mcp_bridge.py   # MCP tools to Claude tool definitions; call one tool
 │   │   └── single_call.py  # run_single_tool_call (brief step 5a)
 │   ├── cost_report.py      # python -m it_requests.cost_report
@@ -255,7 +269,7 @@ Build-MCP/
 │   └── policy.json         # role entitlements (REQUIREMENTS §4.1)
 ├── tests/
 │   ├── conftest.py         # FakeMessages: a fake Anthropic messages API (real SDK types)
-│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report, test_guards (M6, red)
+│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report, test_guards
 │   └── integration/        # conftest (server, server_log), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools, test_agent_single_call
 ├── scripts/
 │   ├── client_demo.py      # calls the running server over HTTP
@@ -573,6 +587,15 @@ Each entry: the decision, and why.
 83. **`python-dotenv` loads `.env`, and the API key is never read by our code.**
     *Why:* `anthropic.Anthropic()` reads `ANTHROPIC_API_KEY` itself, so the key never passes through code that could print or log it (CLAUDE.md). `.env.example` is committed with placeholders only.
 
+84. **The guards use the latest eligibility result, and only successful results satisfy required calls.**
+    *Why:* if two checks disagree, an older `ELIGIBLE` must not back an approval; the agent escalates instead of picking the convenient verdict. An error result is not data, so it can't count as the lookup. C6 still counts every call, failed or not, so a model retrying a bad ID reaches the limit.
+
+85. **Rule and review IDs must appear in the reply as whole tokens.**
+    *Why:* `R-REFRESH` is a substring of `R-REFRESH-OK`. A plain `in` check would pass a denial that cites the wrong rule.
+
+86. **`check_final_answer` returns all violations in a fixed order.**
+    *Why:* the model can fix every problem in one retry, and tests compare exact lists.
+
 ## 6. Change log
 
 | Date | Milestone | Change | Why |
@@ -616,6 +639,7 @@ Each entry: the decision, and why.
 | 2026-11-24 | M5 | Failing tests for the MCP bridge, the cost report and the agent's single tool call (`test_mcp_bridge.py`, `test_cost_report.py`, `test_agent_single_call.py`); `anyio_backend` fixture moved to `tests/conftest.py` | TDD red step |
 | 2026-11-24 | M5 | `agent/mcp_bridge.py`, `agent/single_call.py`, `cost_report.py`, `read_ledger` and `usage_numbers` refactors, `scripts/agent_once.py`, `.env.example`, `python-dotenv` pin, `make agent-once` and `make cost-report` | Brief step 5a: the agent makes one tool call through MCP; the live run is ready for Julian |
 | 2026-11-24 | M6 | Failing tests for the constraint guards (`test_guards.py`, 43 test functions): C1, C2, C3, C6, C7 and the decision table's required calls, with observations built from the real tool functions | TDD red step |
+| 2026-11-24 | M6 | `agent/guards.py`: `Observation`, `FinalAnswer`, `check_tool_call`, `check_final_answer`, `violation_message` | C1, C2, C3, C6 and C7 enforced in code before the ReAct loop uses them |
 
 ## 7. Known issues and fixes
 

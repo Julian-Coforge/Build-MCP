@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from opentelemetry import trace
+
 # A ContextVar, not a global: each asyncio task (each MCP request) sees its own value, so
 # two requests handled at the same time never log each other's ID. A global would be
 # overwritten by whichever request set it last.
@@ -25,6 +27,18 @@ _REDACTED = "[REDACTED]"
 def _redact(fields: dict[str, Any]) -> dict[str, Any]:
     # Case-insensitive, so "Authorization" or "API_KEY" can't slip past on spelling alone.
     return {k: _REDACTED if k.lower() in REDACTED_KEYS else v for k, v in fields.items()}
+
+
+def _trace_ids() -> dict[str, str | None]:
+    # The active span's IDs, in the same hex format as the trace files, so a log line can be
+    # matched to its span (PLAN §5, §6). Null outside a span: no tracer is ever required.
+    context = trace.get_current_span().get_span_context()
+    if not context.is_valid:
+        return {"trace_id": None, "span_id": None}
+    return {
+        "trace_id": format(context.trace_id, "032x"),
+        "span_id": format(context.span_id, "016x"),
+    }
 
 
 class JsonFormatter(logging.Formatter):
@@ -44,6 +58,7 @@ class JsonFormatter(logging.Formatter):
             "component": record.name,
             "event": record.getMessage(),
             "request_id": request_id_var.get(),
+            **_trace_ids(),
         }
         if record.exc_info and record.exc_info[0] is not None:
             # Type and message only: a full traceback would break the one-line format.

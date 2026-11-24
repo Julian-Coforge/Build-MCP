@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-24, milestone M5 in progress (cost maths and the budget gate). M1 to M4 are verified.
+**Last updated:** 2026-11-24, milestone M5 in progress (cost maths, the budget gate and tracing). M1 to M4 are verified.
 
 ---
 
@@ -17,7 +17,7 @@ Policy decisions are made by plain, tested Python functions. The LLM only interp
 
 ## 2. Current state
 
-M0 is done. In M1, the mock employee data, its validating loader and `get_employee_info` exist as plain functions with tests, as does the JSON logging module. The real MCP server exposes one tool, `get_employee_info`, over streamable HTTP, and `scripts/client_demo.py` calls it. In M2, the role-entitlement policy (`data/policy.json`) and its validating loader exist with tests, as does `get_policy_limits`, as a pure function and as the server's second MCP tool. In M3, `check_request_eligibility` exists as a pure function and as the server's third MCP tool. In M4, `flag_for_human_review` exists as a plain function with injected dependencies (the queue path and the current time), with tests, and is the server's fourth MCP tool. An integration test walks the T2 and T3 tool sequences through the real protocol. In M5, the agent package exists with its pure cost functions and budget gate (`agent/costs.py`). The LLM wrapper, tracing and the first live call come next.
+M0 is done. In M1, the mock employee data, its validating loader and `get_employee_info` exist as plain functions with tests, as does the JSON logging module. The real MCP server exposes one tool, `get_employee_info`, over streamable HTTP, and `scripts/client_demo.py` calls it. In M2, the role-entitlement policy (`data/policy.json`) and its validating loader exist with tests, as does `get_policy_limits`, as a pure function and as the server's second MCP tool. In M3, `check_request_eligibility` exists as a pure function and as the server's third MCP tool. In M4, `flag_for_human_review` exists as a plain function with injected dependencies (the queue path and the current time), with tests, and is the server's fourth MCP tool. An integration test walks the T2 and T3 tool sequences through the real protocol. In M5, the agent package exists with its pure cost functions and budget gate (`agent/costs.py`). OpenTelemetry tracing writes spans to JSON-lines files, and every log line carries the active `trace_id` and `span_id`. The LLM wrapper and the first live call come next.
 
 | File | What it does | Status |
 |---|---|---|
@@ -30,6 +30,7 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 | `src/it_requests/eligibility.py` | `add_months` and `check_request_eligibility`: the REQUIREMENTS §4.3 algorithm, the only source of truth for eligibility. | Tested, 100% coverage |
 | `src/it_requests/reviews.py` | `ESCALATION_CODES`, `parse_reason` and `flag_for_human_review`: the only side-effecting tool, which appends review tickets to a JSON queue file (REQUIREMENTS §2.3, §7.4). | Tested, 94% coverage (write-failure path untested); used by `server.py` |
 | `src/it_requests/agent/costs.py` | `cost_usd`, `ledger_total`, `check_budget` and `budget_from_env`, with `UnknownModelError`, `LedgerCorruptError` and `BudgetExceededError`: pure cost maths and the budget gate (PLAN §4). | Tested, 100% coverage; not yet called by any component |
+| `src/it_requests/tracing.py` | `JsonLinesSpanExporter` and `make_tracer`: OpenTelemetry spans written as JSON lines to `traces/<request_id>.jsonl` (PLAN §6). | Tested, 97% coverage (an unused `force_flush` return); not yet called by any component |
 | `src/it_requests/observability.py` | `request_id_var`, `REDACTED_KEYS`, `JsonFormatter`, `log_event` and `configure_logging`: structured JSON logging for the server and, later, the agent (PLAN §5). | Tested, 100% coverage; used by `server.py` |
 | `src/it_requests/server.py` | `build_server(directory, policy_table, *, as_of)` registers all four tools (`get_employee_info`, `get_policy_limits`, `check_request_eligibility`, `flag_for_human_review`) as thin wrappers. Both log through one helper, `_call_and_log`. `main()` configures logging, loads both data files, logs `server.start` and serves on `http://127.0.0.1:8000/mcp`. | Integration-tested in-process; `main()` checked by hand |
 | `scripts/client_demo.py` | Connects over HTTP, lists the tools, calls `get_employee_info` for `E1001`, `" e1001 "` and `E9999`, then calls `get_policy_limits` for `standard`, `Manager` and `intern`, then calls `check_request_eligibility` for five cases, one per kind of verdict plus an unknown item, then calls `flag_for_human_review` three times: a new ticket, the same call again (duplicate) and an invalid reason (screenshot for deliverable #2). | Checked by hand |
@@ -133,7 +134,7 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 
 - **`log_event(logger, event, level=INFO, **fields)`:** the one helper every call site uses. It passes `fields` to the formatter through `extra={"fields": ...}`.
 - **`JsonFormatter`:** writes each record as one line of JSON.
-  - **Standard keys:** `ts`, `level`, `component` and `event`, plus `request_id`, which is taken from `request_id_var`. `ts` is UTC ISO-8601 with milliseconds and a `Z`, for example `2026-11-23T10:15:02.123Z`.
+  - **Standard keys:** `ts`, `level`, `component` and `event`, plus `request_id`, which is taken from `request_id_var`, and `trace_id` and `span_id`, taken from the active OpenTelemetry span (hex, or `null` outside a span). `ts` is UTC ISO-8601 with milliseconds and a `Z`, for example `2026-11-23T10:15:02.123Z`.
   - **Custom fields:** written after redaction. The standard keys are applied last, so a custom field can't overwrite them.
   - **Exceptions:** add `exc_type` and `exc_message`, with no traceback, so each record stays on one line.
   - **Non-JSON values:** dates and other values that JSON can't hold are written as strings (`json.dumps(default=str)`).
@@ -142,7 +143,19 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
   - Returns the named logger, writing to stderr, and also to `log_file` if one is given. Parent folders are created.
   - It closes and replaces existing handlers, so calling it twice never duplicates log lines.
   - Sets `propagate = False`.
-- **Not yet included:** `trace_id` and `span_id` (PLAN §5). They arrive with tracing in M5.
+
+### `tracing.py` in detail
+
+- **`JsonLinesSpanExporter(path)`:** appends one JSON line per finished span. Each line has:
+  - `name`, `trace_id` (32 hex characters), `span_id` (16 hex) and `parent_span_id` (`null` for the root span)
+  - `start` and `end` (UTC ISO-8601) and `duration_ms`
+  - `status` (`UNSET`, `OK` or `ERROR`) and `attributes`
+
+  It creates the parent folder, and opens the file for each export, so no handle stays open.
+- **`make_tracer(path)`:** returns `(tracer, provider)`.
+  - It builds a new `TracerProvider` with a `SimpleSpanProcessor` and the exporter, and never sets the global provider.
+  - The tracer is typed as the OpenTelemetry API's `Tracer`.
+  - The caller shuts the provider down at the end of a run.
 
 ### `server.py` in detail
 
@@ -188,13 +201,14 @@ Build-MCP/
 │   │   ├── __init__.py
 │   │   └── costs.py        # cost_usd, ledger_total, check_budget, budget_from_env (pure)
 │   ├── observability.py    # JSON logging: log_event, configure_logging
+│   ├── tracing.py          # OpenTelemetry spans to traces/<request_id>.jsonl
 │   ├── server.py           # MCP server: build_server (thin tool wrappers) and main
 │   └── py.typed            # marks the package as typed for mypy
 ├── data/
 │   ├── employees.json      # mock employees (REQUIREMENTS §8)
 │   └── policy.json         # role entitlements (REQUIREMENTS §4.1)
 ├── tests/
-│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs
+│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing
 │   └── integration/        # conftest (server, server_log), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools
 ├── scripts/
 │   └── client_demo.py      # calls the running server over HTTP
@@ -441,6 +455,24 @@ Each entry: the decision, and why.
 63. **The Haiku long-prompt tier counts cached tokens toward the 100K threshold, and keeps the normal cache prices.**
     *Why:* the tier depends on the whole prompt's size. The price source gives long-prompt input and output prices only, so the cache prices are unchanged. This was flagged in the red step.
 
+64. **`opentelemetry-sdk` is pinned to exactly the installed `opentelemetry-api` version (1.45.2).**
+    *Why:* the SDK and the API are released together, and a mismatched pair can fail at import or drop spans. The API comes in with `mcp`.
+
+65. **Traces go to JSON-lines files, through our own small exporter.**
+    *Why:* a prototype needs no tracing backend, and the files can be read with `jq` and used in screenshots (PLAN §6). Pointing at Jaeger later is a one-line exporter change.
+
+66. **`make_tracer` builds a new provider each time, and never sets the global one.**
+    *Why:* the global provider can be set only once per process, so tests would depend on their order. The tracer is passed in explicitly, like `as_of` and `clock`.
+
+67. **The exporter appends instead of overwriting.**
+    *Why:* re-running the same request keeps its earlier traces. Each run is told apart by its own `trace_id`.
+
+68. **`SimpleSpanProcessor`, not a batching processor.**
+    *Why:* each span is written as soon as it ends, so a crash mid-run still leaves every finished span on disk. The volume is a handful of spans per run, so batching would gain nothing.
+
+69. **Log lines carry `trace_id` and `span_id` in the same hex format as the trace files.**
+    *Why:* a log line can be matched to its span (PLAN §5). The IDs are read from OpenTelemetry's current-span context, which is a ContextVar like `request_id_var`, so the logger needs no tracer passed in. Outside a span both are `null`.
+
 ## 6. Change log
 
 | Date | Milestone | Change | Why |
@@ -478,6 +510,7 @@ Each entry: the decision, and why.
 | 2026-11-24 | M5 | Failing tests for cost maths and the budget gate (`test_costs.py`) | TDD red step |
 | 2026-11-24 | M5 | `config.py`: `REPO_ROOT`, log and trace paths, models, price table, budget limits. New `agent/` package with `costs.py` | Cost transparency and the budget gate, before any paid call |
 | 2026-11-24 | M5 | Failing tests for the span exporter and log-trace correlation (`test_tracing.py`, `test_observability.py`); `opentelemetry-sdk==1.45.2` pinned and installed so the tests can create real spans | TDD red step |
+| 2026-11-24 | M5 | `tracing.py` (`JsonLinesSpanExporter`, `make_tracer`); `trace_id` and `span_id` in every log line | Traces per request, cross-referenced with logs (PLAN §5, §6) |
 
 ## 7. Known issues and fixes
 

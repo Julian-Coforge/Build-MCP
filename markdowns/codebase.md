@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-24, milestone M5 in progress (cost maths, the budget gate and tracing). M1 to M4 are verified.
+**Last updated:** 2026-11-24, milestone M5 in progress (cost maths, the budget gate, tracing and the LLM wrapper). M1 to M4 are verified.
 
 ---
 
@@ -17,7 +17,7 @@ Policy decisions are made by plain, tested Python functions. The LLM only interp
 
 ## 2. Current state
 
-M0 is done. In M1, the mock employee data, its validating loader and `get_employee_info` exist as plain functions with tests, as does the JSON logging module. The real MCP server exposes one tool, `get_employee_info`, over streamable HTTP, and `scripts/client_demo.py` calls it. In M2, the role-entitlement policy (`data/policy.json`) and its validating loader exist with tests, as does `get_policy_limits`, as a pure function and as the server's second MCP tool. In M3, `check_request_eligibility` exists as a pure function and as the server's third MCP tool. In M4, `flag_for_human_review` exists as a plain function with injected dependencies (the queue path and the current time), with tests, and is the server's fourth MCP tool. An integration test walks the T2 and T3 tool sequences through the real protocol. In M5, the agent package exists with its pure cost functions and budget gate (`agent/costs.py`). OpenTelemetry tracing writes spans to JSON-lines files, and every log line carries the active `trace_id` and `span_id`. The LLM wrapper and the first live call come next.
+M0 is done. In M1, the mock employee data, its validating loader and `get_employee_info` exist as plain functions with tests, as does the JSON logging module. The real MCP server exposes one tool, `get_employee_info`, over streamable HTTP, and `scripts/client_demo.py` calls it. In M2, the role-entitlement policy (`data/policy.json`) and its validating loader exist with tests, as does `get_policy_limits`, as a pure function and as the server's second MCP tool. In M3, `check_request_eligibility` exists as a pure function and as the server's third MCP tool. In M4, `flag_for_human_review` exists as a plain function with injected dependencies (the queue path and the current time), with tests, and is the server's fourth MCP tool. An integration test walks the T2 and T3 tool sequences through the real protocol. In M5, the agent package exists with its pure cost functions and budget gate (`agent/costs.py`). OpenTelemetry tracing writes spans to JSON-lines files, and every log line carries the active `trace_id` and `span_id`. `LLMClient` (`agent/llm.py`) is the one wrapper every model call goes through: it records tokens, cost, latency and a span for each call, and is tested only with a fake. The first live call comes next.
 
 | File | What it does | Status |
 |---|---|---|
@@ -30,6 +30,8 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 | `src/it_requests/eligibility.py` | `add_months` and `check_request_eligibility`: the REQUIREMENTS §4.3 algorithm, the only source of truth for eligibility. | Tested, 100% coverage |
 | `src/it_requests/reviews.py` | `ESCALATION_CODES`, `parse_reason` and `flag_for_human_review`: the only side-effecting tool, which appends review tickets to a JSON queue file (REQUIREMENTS §2.3, §7.4). | Tested, 94% coverage (write-failure path untested); used by `server.py` |
 | `src/it_requests/agent/costs.py` | `cost_usd`, `ledger_total`, `check_budget` and `budget_from_env`, with `UnknownModelError`, `LedgerCorruptError` and `BudgetExceededError`: pure cost maths and the budget gate (PLAN §4). | Tested, 100% coverage; not yet called by any component |
+| `src/it_requests/agent/llm.py` | `LLMClient` (the one wrapper for paid model calls) and the `CreateMessage` protocol. Each call writes a cost-ledger line, an `llm.call` span and an `llm.call` log line. | Tested with a fake, 100% coverage; not yet called by any component |
+| `src/it_requests/agent/prompts.py` | `PROMPT_VERSION` (`m5-v1`) and `SYSTEM_PROMPT_SINGLE_CALL`. | Covered by the `LLMClient` tests |
 | `src/it_requests/tracing.py` | `JsonLinesSpanExporter` and `make_tracer`: OpenTelemetry spans written as JSON lines to `traces/<request_id>.jsonl` (PLAN §6). | Tested, 97% coverage (an unused `force_flush` return); not yet called by any component |
 | `src/it_requests/observability.py` | `request_id_var`, `REDACTED_KEYS`, `JsonFormatter`, `log_event` and `configure_logging`: structured JSON logging for the server and, later, the agent (PLAN §5). | Tested, 100% coverage; used by `server.py` |
 | `src/it_requests/server.py` | `build_server(directory, policy_table, *, as_of)` registers all four tools (`get_employee_info`, `get_policy_limits`, `check_request_eligibility`, `flag_for_human_review`) as thin wrappers. Both log through one helper, `_call_and_log`. `main()` configures logging, loads both data files, logs `server.start` and serves on `http://127.0.0.1:8000/mcp`. | Integration-tested in-process; `main()` checked by hand |
@@ -144,6 +146,17 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
   - It closes and replaces existing handlers, so calling it twice never duplicates log lines.
   - Sets `propagate = False`.
 
+### `agent/llm.py` in detail
+
+- **`CreateMessage`:** a `Protocol` for the one call shape used, `create(**kwargs) -> Message`. mypy `--strict` rejects passing the SDK's `client.messages.create` directly, because its overloads include streaming. The caller adapts it with a three-line non-streaming function, shown in the docstring.
+- **`LLMClient(*, create, model, env, ledger_path, tracer, logger, clock)`:** everything is injected. `clock` is a monotonic timer, used for latency only.
+- **`call(*, request_id, run_id, stage, system, messages, tools) -> Message`:**
+  - **Sends:** `model`, `max_tokens=MAX_TOKENS_PER_CALL` (4000), `system`, `messages`, `tools`, `tool_choice={"type": "auto"}` and `thinking={"type": "adaptive"}`.
+  - **Records:** opens an `llm.call` span with `model`, `prompt_version` and `stage`, then adds the four token counts, `cost_usd`, `latency_ms` and `stop_reason`.
+  - **Ledger:** appends one line to the cost ledger with `ts`, `request_id`, `run_id`, `stage`, `model`, `prompt_version`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `cost_usd`, `latency_ms`, `env` and `stop_reason`. `null` cache counts are recorded as 0.
+  - **Log:** logs `llm.call` at INFO with the same numbers. It never logs messages, the system prompt, tools or the request text.
+  - **Failure:** if `create` raises, the span is marked `ERROR`, no ledger line is written, and the exception propagates. There is no retry, because the SDK already retries.
+
 ### `tracing.py` in detail
 
 - **`JsonLinesSpanExporter(path)`:** appends one JSON line per finished span. Each line has:
@@ -199,7 +212,9 @@ Build-MCP/
 │   ├── reviews.py          # flag_for_human_review and parse_reason (writes the review queue)
 │   ├── agent/
 │   │   ├── __init__.py
-│   │   └── costs.py        # cost_usd, ledger_total, check_budget, budget_from_env (pure)
+│   │   ├── costs.py        # cost_usd, ledger_total, check_budget, budget_from_env (pure)
+│   │   ├── llm.py          # LLMClient: every model call, with ledger, span and log
+│   │   └── prompts.py      # PROMPT_VERSION and system prompts
 │   ├── observability.py    # JSON logging: log_event, configure_logging
 │   ├── tracing.py          # OpenTelemetry spans to traces/<request_id>.jsonl
 │   ├── server.py           # MCP server: build_server (thin tool wrappers) and main
@@ -208,7 +223,8 @@ Build-MCP/
 │   ├── employees.json      # mock employees (REQUIREMENTS §8)
 │   └── policy.json         # role entitlements (REQUIREMENTS §4.1)
 ├── tests/
-│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing
+│   ├── conftest.py         # FakeMessages: a fake Anthropic messages API (real SDK types)
+│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm
 │   └── integration/        # conftest (server, server_log), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools
 ├── scripts/
 │   └── client_demo.py      # calls the running server over HTTP
@@ -473,6 +489,27 @@ Each entry: the decision, and why.
 69. **Log lines carry `trace_id` and `span_id` in the same hex format as the trace files.**
     *Why:* a log line can be matched to its span (PLAN §5). The IDs are read from OpenTelemetry's current-span context, which is a ContextVar like `request_id_var`, so the logger needs no tracer passed in. Outside a span both are `null`.
 
+70. **Every model call goes through `LLMClient`.**
+    *Why:* cost tracking and tracing can't be bypassed. The ledger the budget gate sums is complete only if no code calls the SDK directly (PLAN §2).
+
+71. **`LLMClient` takes a `create` function typed by a small `CreateMessage` protocol, not the SDK client.**
+    *Why:* tests pass `FakeMessages.create`, and mypy `--strict` rejects the SDK's overloaded `messages.create` (its overloads include streaming). The caller adapts the SDK with a non-streaming function. Checked with mypy in a scratch file before choosing.
+
+72. **`tool_choice` is `auto`, with adaptive thinking.**
+    *Why:* forced `tool_choice` returns a 400 on Sonnet 5.5, and the same code must run on Haiku and Sonnet. The system prompt asks for exactly one tool instead.
+
+73. **A failed call writes no ledger line and is not retried.**
+    *Why:* no tokens are billed for a failed request, so recording one would overstate spend. The SDK already retries 429 and 5xx twice, so a second retry layer would multiply waits and calls.
+
+74. **The ledger, span and log carry numbers only, never prompt content.**
+    *Why:* messages and the request text can hold names and other personal data (CLAUDE.md, PLAN §5). Tests check the raw log text for a name and the system prompt.
+
+75. **`PROMPT_VERSION` goes on every ledger line, span and log line.**
+    *Why:* any change in cost or behaviour can be traced to the prompt that caused it. It is bumped on every prompt edit.
+
+76. **The test fake builds real `anthropic.types.Message` objects, and lives in `tests/conftest.py`.**
+    *Why:* a field-name mistake (for example `usage.cache_read_tokens`) fails the test, where a dict or `MagicMock` would quietly return a value. It sits at the top of `tests/`, so unit and integration tests can share it.
+
 ## 6. Change log
 
 | Date | Milestone | Change | Why |
@@ -512,6 +549,7 @@ Each entry: the decision, and why.
 | 2026-11-24 | M5 | Failing tests for the span exporter and log-trace correlation (`test_tracing.py`, `test_observability.py`); `opentelemetry-sdk==1.45.2` pinned and installed so the tests can create real spans | TDD red step |
 | 2026-11-24 | M5 | `tracing.py` (`JsonLinesSpanExporter`, `make_tracer`); `trace_id` and `span_id` in every log line | Traces per request, cross-referenced with logs (PLAN §5, §6) |
 | 2026-11-24 | M5 | Failing tests for `LLMClient` (`test_llm.py`); shared `FakeMessages` fake in `tests/conftest.py`; `anthropic==2.13.0` pinned and installed so the fake can build real SDK types | TDD red step |
+| 2026-11-24 | M5 | `agent/llm.py` (`LLMClient`, `CreateMessage`) and `agent/prompts.py` (`PROMPT_VERSION`, `SYSTEM_PROMPT_SINGLE_CALL`) | One wrapper for every paid model call, so cost tracking and tracing can't be bypassed |
 
 ## 7. Known issues and fixes
 

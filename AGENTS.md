@@ -6,7 +6,7 @@ Instructions for any coding agent working in this repo. Read this before every t
 
 An IT equipment request handler for a course assignment (Week 7 lab), with two parts:
 - **A Python MCP server** exposes four tools over mock data: `get_employee_info`, `get_policy_limits`, `check_request_eligibility` and `flag_for_human_review`.
-- **A ReAct agent** on the Codex API uses those tools to approve, deny or escalate free-text equipment requests, then reflects on its own draft reply.
+- **A ReAct agent** on the Claude API (Anthropic) uses those tools to approve, deny or escalate free-text equipment requests, then reflects on its own draft reply.
 
 **Core principle:** deterministic, tested Python makes every policy decision. The LLM only interprets the request text, picks which tools to call, and drafts the reply. When the data doesn't clearly support approve or deny, the agent escalates. It never guesses.
 
@@ -47,7 +47,7 @@ markdowns/           all project docs
 4. **Run `make check` before you say a task is done.** It must pass. Report the result honestly, failures included.
 5. **Pure functions for policy logic.** No I/O, no system clock (take `as_of`, default `config.REFERENCE_DATE` = 2026-11-22), no globals. `server.py` holds thin MCP wrappers only.
 6. **Tool errors are returned as data**, for example `{"error": "EMPLOYEE_NOT_FOUND", ...}`, never raised to the agent (REQUIREMENTS §7).
-7. **Stay in scope.** Do only what the prompt asks. Don't touch `examples/step1/` or the docs in `markdowns/`. The user's main Codex session keeps `codebase.md` and `MILESTONES.md` up to date.
+7. **Stay in scope.** Do only what the prompt asks. Don't touch `examples/step1/` or the docs in `markdowns/`. The user's main Claude session keeps `codebase.md` and `MILESTONES.md` up to date.
 
 ## Commands
 
@@ -76,8 +76,8 @@ make client-demo            # call the server from the demo client (from M1)
 
 ## LLM cost (hard budget: under $5 in total)
 
-- **Tests and CI never call the real Codex API.** Use a fake client.
-- Development runs use `Codex-haiku-5-5`. Evaluation and demo runs use `Codex-sonnet-5-5`. Do not use Opus for the agent.
+- **Tests and CI never call the real Claude API.** Use a fake client.
+- Development runs use `claude-haiku-5-5`. Evaluation and demo runs use `claude-sonnet-5-5` (Anthropic model IDs: keep them exactly as written, even when a Codex agent is doing the work). Do not use Opus for the agent.
 - Every model call goes through the one LLM wrapper, which records tokens and cost in `logs/cost_ledger.jsonl` (from M5).
 - The budget gate refuses to run at $4.00 spent. Never bypass it or raise it without the user's say-so.
 - Don't start a live (paid) run unless the user asks for one.

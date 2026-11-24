@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-24, milestone M4 (`flag_for_human_review` as a plain function and as the fourth MCP tool; all four tools tested together). M1, M2 and M3 are verified.
+**Last updated:** 2026-11-24, milestone M4 (`flag_for_human_review` as a plain function and as the fourth MCP tool; all four tools tested together). M1 to M4 are verified.
 
 ---
 
@@ -478,4 +478,16 @@ Checked by the main Claude session on a copy of branch `m3-check-eligibility` at
 - Each step has a red commit before its green commit.
 - `eligibility.py` follows the REQUIREMENTS §4.3 step order exactly. All 13 rows of the §8 table, the boundary dates and the month-end clamp are tested.
 - One note: `eligibility.py` uses an `assert` to narrow types before the refresh step. The `ItemLimit` validator already guarantees that condition, so it is safe here. Python's `-O` flag strips asserts, so never rely on one for a check the data could actually fail.
+
+### 7.6 M4 verification (2026-11-24)
+
+Checked by the main Claude session on a copy of branch `m4-flag-for-review` at `a2cb9f1`, Python 3.14.6:
+- `ruff format --check`, `ruff check`, `mypy --strict` and `pip-audit` all pass.
+- 193 unit tests and 32 integration tests pass. Coverage is 98%.
+- Each step has a red commit before its green commit.
+- All four tool descriptions match REQUIREMENTS §7 exactly.
+- **Untested lines (optional follow-up):**
+  - `reviews.py` lines 75 to 77 (temp-file cleanup when a write fails) and 146 to 147 (an `OSError` on write becoming `QUEUE_UNAVAILABLE`). A test that monkeypatches `os.replace` to raise `OSError` would cover both.
+  - `server.py` line 86 (`_utc_now`), which only runs in the real server.
+- **`AGENTS.md`:** added as a copy of `CLAUDE.md` for Codex agents. A blanket find-and-replace had turned the Anthropic model IDs into `Codex-haiku-5-5` and `Codex-sonnet-5-5`. These are corrected back to `claude-haiku-5-5` and `claude-sonnet-5-5`, so an agent writing M5 code can't call a model that doesn't exist.
 

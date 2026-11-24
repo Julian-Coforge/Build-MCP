@@ -3,7 +3,7 @@
 > Where the project is right now. Updated as each item is finished.
 > Details for each milestone are in `PLAN.md` §13; what the code does is in `codebase.md`.
 
-**Current stage:** M3 complete (merged, verified). Now: **M4**, prompt pack in `markdowns/prompts/M4.md`.
+**Current stage:** M4 verified (LaTeX listings for #3 and #4). Next: **M5**, prompt pack in `markdowns/prompts/M5.md`.
 **Due:** 2026-11-26 · **LLM spend so far:** $0.00 of the $5 budget (code gate at $4.00)
 
 Legend: `[x]` done · `[ ]` not done · 📸 = screenshot for the submission PDF (number = deliverable order)
@@ -43,9 +43,9 @@ Legend: `[x]` done · `[ ]` not done · 📸 = screenshot for the submission PDF
 - [x] Wrapped as a tool, callable from the client
 
 ## M4: `flag_for_human_review` (brief step 4)
-- [ ] Unit tests: creates REV-0001, bad reason code rejected with nothing written, empty request rejected, unknown employee accepted, duplicate returns the same ID
-- [ ] Function passes, wrapped as a tool
-- [ ] Integration test: all four tools called through MCP
+- [x] Unit tests: creates REV-0001, bad reason code rejected with nothing written, empty request rejected, unknown employee accepted, duplicate returns the same ID
+- [x] Function passes, wrapped as a tool
+- [x] Integration test: all four tools called through MCP
 - [ ] 📸 **#3** MCP server code (all four tools)
 - [ ] 📸 **#4** Unit tests and terminal output showing them passing
 

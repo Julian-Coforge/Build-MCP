@@ -1,0 +1,102 @@
+{
+  "version": "cases-v1",
+  "source": "REQUIREMENTS §9.1 (T1-T4, text word for word) and §9.2 (T5-T12, written as the employee would)",
+  "cases": [
+    {
+      "id": "T1",
+      "request_id": "REQ-0001",
+      "text": "Hi, I'm Marcus (E1002). I'd like a second monitor for my desk, I'm juggling a lot of windows.",
+      "expected_decision": "approve",
+      "expected_code": "R-NEW",
+      "required_tools": ["get_employee_info", "check_request_eligibility"]
+    },
+    {
+      "id": "T2",
+      "request_id": "REQ-0002",
+      "text": "This is Priya, E1001. My laptop feels slow lately, can I get a new one?",
+      "expected_decision": "deny",
+      "expected_code": "R-REFRESH",
+      "required_tools": ["get_employee_info", "check_request_eligibility", "get_policy_limits"]
+    },
+    {
+      "id": "T3",
+      "request_id": "REQ-0003",
+      "text": "Dana Okafor, E1003. My work phone was stolen from my car last night and I need a replacement ASAP.",
+      "expected_decision": "escalate",
+      "expected_code": "E6",
+      "required_tools": ["flag_for_human_review"]
+    },
+    {
+      "id": "T4",
+      "request_id": "REQ-0004",
+      "text": "I'm Alex, E1005. My doctor recommended a standing desk and an ergonomic keyboard for my back pain.",
+      "expected_decision": "escalate",
+      "expected_code": "E9",
+      "required_tools": ["flag_for_human_review"]
+    },
+    {
+      "id": "T5",
+      "request_id": "REQ-0005",
+      "text": "Hi, Alex here (E1005). My laptop is 4 years old and slow, can I get a replacement?",
+      "expected_decision": "approve",
+      "expected_code": "R-REFRESH-OK",
+      "required_tools": ["get_employee_info", "check_request_eligibility"]
+    },
+    {
+      "id": "T6",
+      "request_id": "REQ-0006",
+      "text": "Hi, I'm Sam, E1004. Can I get a company laptop?",
+      "expected_decision": "deny",
+      "expected_code": "R-ROLE",
+      "required_tools": ["get_employee_info", "check_request_eligibility", "get_policy_limits"]
+    },
+    {
+      "id": "T7",
+      "request_id": "REQ-0007",
+      "text": "Hello, my employee ID is E9999. I need a new headset.",
+      "expected_decision": "escalate",
+      "expected_code": "E1",
+      "required_tools": ["flag_for_human_review"]
+    },
+    {
+      "id": "T8",
+      "request_id": "REQ-0008",
+      "text": "Jordan here, E1006. Can I get a second monitor?",
+      "expected_decision": "escalate",
+      "expected_code": "E2",
+      "required_tools": ["flag_for_human_review"]
+    },
+    {
+      "id": "T9",
+      "request_id": "REQ-0009",
+      "text": "Marcus, E1002. My dock stopped working, can I get a new one?",
+      "expected_decision": "escalate",
+      "expected_code": "E7",
+      "required_tools": ["get_employee_info", "check_request_eligibility", "flag_for_human_review"]
+    },
+    {
+      "id": "T10",
+      "request_id": "REQ-0010",
+      "text": "Marcus (E1002) here. I want a MacBook Pro M4 Max with 64 GB RAM.",
+      "expected_decision": "escalate",
+      "expected_code": "E8",
+      "required_tools": ["flag_for_human_review"]
+    },
+    {
+      "id": "T11",
+      "request_id": "REQ-0011",
+      "text": "Priya, E1001. Can I get a new laptop and a headset?",
+      "expected_decision": "escalate",
+      "expected_code": "E5",
+      "required_tools": ["flag_for_human_review"]
+    },
+    {
+      "id": "T12",
+      "request_id": "REQ-0012",
+      "text": "Priya here (E1001). I need a better setup.",
+      "expected_decision": "escalate",
+      "expected_code": "E4",
+      "required_tools": ["flag_for_human_review"]
+    }
+  ]
+}

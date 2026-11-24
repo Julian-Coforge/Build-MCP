@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-24, milestone M6 in progress (the ReAct loop `run_agent` with guards, step cap and E11 fallback, and the printed trace `format_trace`; tested with the fake model only, no live loop run yet). M1 to M5 are verified.
+**Last updated:** 2026-11-24, milestone M6 in progress (the ReAct loop `run_agent` with guards, step cap and E11 fallback, and the printed trace `format_trace`; tested with the fake model only, no live loop run yet). Failing tests for the eval helpers and the server reading `request_id` from `_meta`; `evals/cases.json` (T1 to T12) added. M1 to M5 are verified.
 
 ---
 
@@ -300,8 +300,8 @@ Build-MCP/
 │   └── policy.json         # role entitlements (REQUIREMENTS §4.1)
 ├── tests/
 │   ├── conftest.py         # FakeMessages: a fake Anthropic messages API (real SDK types)
-│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report, test_guards, test_tools, test_prompts, test_trace_format
-│   └── integration/        # conftest (server, server_log), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools, test_agent_single_call, test_agent_loop
+│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report, test_guards, test_tools, test_prompts, test_trace_format, test_evals (M6, red)
+│   └── integration/        # conftest (server, server_log), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools, test_agent_single_call, test_agent_loop, test_server_meta (M6, red)
 ├── scripts/
 │   ├── client_demo.py      # calls the running server over HTTP
 │   └── agent_once.py       # one live, paid agent run (brief step 5a)
@@ -696,6 +696,7 @@ Each entry: the decision, and why.
 | 2026-11-24 | M6 | `agent/tools.py`, `SYSTEM_PROMPT_REACT` and `PROMPT_VERSION` `m6-v1` in `agent/prompts.py`, `system_blocks` and block-list `system` in `agent/llm.py` | Every Action carries a Thought, the decision comes back as data, and the fixed prompt prefix is cached |
 | 2026-11-24 | M6 | Failing tests for the ReAct loop (`tests/integration/test_agent_loop.py`) and the printed trace (`test_trace_format.py`); `build_message` in `tests/conftest.py` takes `tool_uses` (several tool_use blocks, ids `toolu_01`, `toolu_02`, ...) and `thinking` | TDD red step |
 | 2026-11-24 | M6 | `agent/loop.py` (`run_agent`, `AgentRequest`, `AgentResult`, `Step`, `GuardEvent`), `agent/trace_format.py` (`format_trace`); `traceparent` and `span_safe_arguments` moved to `mcp_bridge.py` | The ReAct loop with guards, the step cap and the E11 fallback enforced in code, plus the printed trace |
+| 2026-11-24 | M6 | `evals/cases.json` (T1 to T12, `cases-v1`); failing tests for the eval helpers (`test_evals.py`) and for the server logging `request_id` from `_meta` (`test_server_meta.py`) | TDD red step |
 
 ## 7. Known issues and fixes
 

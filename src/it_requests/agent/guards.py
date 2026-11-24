@@ -69,7 +69,7 @@ def _successful_flags(observations: Sequence[Observation]) -> int:
     )
 
 
-def _cites(text: str | None, token: str | None) -> bool:
+def cites(text: str | None, token: str | None) -> bool:
     """True if `token` appears in `text` as a whole ID.
 
     Not a plain substring check: "R-REFRESH" is inside "R-REFRESH-OK", and citing the
@@ -134,7 +134,7 @@ def _check_deny(answer: FinalAnswer, observations: Sequence[Observation]) -> lis
         verdict is not None
         and verdict.get("status") == "NOT_ELIGIBLE"
         and verdict.get("rule_id") == answer.rule_id
-        and _cites(answer.draft_reply, answer.rule_id)
+        and cites(answer.draft_reply, answer.rule_id)
     ):
         codes.append("C2")
     required = {"get_employee_info", ELIGIBILITY_TOOL, "get_policy_limits"}
@@ -149,7 +149,7 @@ def _check_escalate(answer: FinalAnswer, observations: Sequence[Observation]) ->
     if not (
         flagged is not None
         and answer.review_id == flagged[1]
-        and _cites(answer.draft_reply, answer.review_id)
+        and cites(answer.draft_reply, answer.review_id)
         and answer.reason_code in ESCALATION_CODES
     ):
         codes.append("C3")

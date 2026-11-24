@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-24, milestone M5 (cost maths, the budget gate, tracing, the LLM wrapper and the agent's single tool call; the first live call is still to be run). M1 to M4 are verified.
+**Last updated:** 2026-11-24, milestone M5 (cost maths, the budget gate, tracing, the LLM wrapper and the agent's single tool call; first live call made and verified). M1 to M5 are verified.
 
 ---
 
@@ -667,4 +667,21 @@ Checked by the main Claude session on a copy of branch `m4-flag-for-review` at `
   - `reviews.py` lines 75 to 77 (temp-file cleanup when a write fails) and 146 to 147 (an `OSError` on write becoming `QUEUE_UNAVAILABLE`). A test that monkeypatches `os.replace` to raise `OSError` would cover both.
   - `server.py` line 86 (`_utc_now`), which only runs in the real server.
 - **`AGENTS.md`:** added as a copy of `CLAUDE.md` for Codex agents. A blanket find-and-replace had turned the Anthropic model IDs into `Codex-haiku-5-5` and `Codex-sonnet-5-5`. These are corrected back to `claude-haiku-5-5` and `claude-sonnet-5-5`, so an agent writing M5 code can't call a model that doesn't exist.
+
+### 7.7 M5 verification (2026-11-24)
+
+Checked by the main Claude session on a copy of branch `m5-agent-single-call` at `041d156`, Python 3.14.6:
+- `ruff format --check`, `ruff check`, `mypy --strict` and `pip-audit` all pass.
+- 263 unit tests and 39 integration tests pass. Coverage is 99%, and every new agent module is at 100%.
+- Each of the four steps has a red commit before its green commit.
+
+**Live run (Julian, 2026-11-24, `make agent-once`, Haiku, env `dev`):**
+- Claude chose `get_employee_info` with `{"employee_id": "E1002"}`, and the server returned status `ok` (`employees-v1`).
+- 1,159 input tokens and 55 output tokens, so $0.000143. That matches the price table: 1,159 × $0.10/1M + 55 × $0.50/1M = $0.0001434. Latency was 678 ms and `stop_reason` was `tool_use`.
+- One ledger line and `traces/REQ-0501.jsonl` were written. `make cost-report` showed a remaining budget of $3.9999 of $4.00.
+- **Correlation works across processes:** the server's `tool.call` log line carries the agent's `trace_id` (`4d2a925f…`), so agent and server logs can be joined on it.
+
+**Known gaps (not blocking):**
+- The server logs `request_id: null`. The agent sends `request_id` in `_meta`, but the server doesn't read it into `request_id_var` yet. Picking it up is a small M6 task.
+- `cost_report` rounds to 4 decimal places, so a Haiku run shows as $0.0001. Showing 6 decimals would make dev spend readable.
 

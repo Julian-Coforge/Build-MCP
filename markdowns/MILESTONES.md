@@ -3,7 +3,7 @@
 > Where the project is right now. Updated as each item is finished.
 > Details for each milestone are in `PLAN.md` §13; what the code does is in `codebase.md`.
 
-**Current stage:** M4 verified (LaTeX listings for #3 and #4). Next: **M5**, prompt pack in `markdowns/prompts/M5.md`.
+**Current stage:** M5 verified (live Haiku run cost $0.000143). Push and merge M5, then **M6** (the full ReAct loop).
 **Due:** 2026-11-26 · **LLM spend so far:** $0.00 of the $5 budget (code gate at $4.00)
 
 Legend: `[x]` done · `[ ]` not done · 📸 = screenshot for the submission PDF (number = deliverable order)
@@ -50,12 +50,12 @@ Legend: `[x]` done · `[ ]` not done · 📸 = screenshot for the submission PDF
 - [ ] 📸 **#4** Unit tests and terminal output showing them passing
 
 ## M5: Agent: one hardcoded tool call, plus cost tracking and tracing (brief step 5a)
-- [ ] API key in `.env`; $5 spend limit set on the Anthropic Console *(yours)*
-- [ ] LLM wrapper records tokens and cost to `logs/cost_ledger.jsonl` (tested with a fake client)
-- [ ] Budget gate refuses to run at $4.00 or more (tested)
-- [ ] OpenTelemetry trace file per request (tested)
-- [ ] Agent connects to the server as an MCP client
-- [ ] One live call on a hardcoded request (Haiku); cost line and trace file appear
+- [x] API key in `.env`; $5 spend limit set on the Anthropic Console *(yours)*
+- [x] LLM wrapper records tokens and cost to `logs/cost_ledger.jsonl` (tested with a fake client)
+- [x] Budget gate refuses to run at $4.00 or more (tested)
+- [x] OpenTelemetry trace file per request (tested)
+- [x] Agent connects to the server as an MCP client
+- [x] One live call on a hardcoded request (Haiku); cost line and trace file appear
 
 ## M6: Full ReAct loop and guards (brief step 5b, Part 4)
 - [ ] Each Action carries a `thought` field; `final_answer` tool with a strict schema

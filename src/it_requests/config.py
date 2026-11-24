@@ -17,3 +17,5 @@ REFERENCE_DATE: date = date(2026, 11, 22)
 DATA_DIR: Path = Path(__file__).resolve().parents[2] / "data"
 EMPLOYEES_FILE: Path = DATA_DIR / "employees.json"
 POLICY_FILE: Path = DATA_DIR / "policy.json"
+# Written at runtime by flag_for_human_review; gitignored, never committed.
+REVIEW_QUEUE_FILE: Path = DATA_DIR / "review_queue.json"

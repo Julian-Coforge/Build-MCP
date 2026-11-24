@@ -1,6 +1,6 @@
 # Run from an activated virtualenv (source .venv/bin/activate).
 # `make check` runs the same steps as CI, in the same fast-to-slow order.
-.PHONY: install format lint type test audit check serve client-demo
+.PHONY: install format lint type test audit check serve client-demo reset-reviews
 
 install:
 	python -m pip install -e ".[dev]"
@@ -30,3 +30,7 @@ serve:
 # Call the running server over HTTP. Run `make serve` in another terminal first.
 client-demo:
 	python scripts/client_demo.py
+
+# Delete the review queue, so the demo starts clean and its first ticket is REV-0001.
+reset-reviews:
+	rm -f data/review_queue.json

@@ -108,7 +108,7 @@ def test_second_different_flag_gets_next_id(queue_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("employee_id", "request"),
+    ("employee_id", "request_text"),
     [
         ("E1003", REQUEST),
         (" e1003 ", REQUEST),  # case and whitespace in the ID don't make a new ticket
@@ -116,11 +116,11 @@ def test_second_different_flag_gets_next_id(queue_path: Path) -> None:
     ],
 )
 def test_duplicate_returns_existing_ticket(
-    queue_path: Path, employee_id: str, request: str
+    queue_path: Path, employee_id: str, request_text: str
 ) -> None:
     first = _flag(queue_path, "E1003", REQUEST, REASON)
 
-    again = _flag(queue_path, employee_id, request, "E11: different reason, same request")
+    again = _flag(queue_path, employee_id, request_text, "E11: different reason, same request")
 
     assert again == {
         "review_id": first["review_id"],
@@ -180,9 +180,10 @@ def test_invalid_reason_rejected_and_nothing_written(queue_path: Path, reason: s
     assert not queue_path.exists()
 
 
-@pytest.mark.parametrize("request", ["", "   ", "\n\t"])
-def test_empty_request_rejected_and_nothing_written(queue_path: Path, request: str) -> None:
-    result = _flag(queue_path, "E1003", request, REASON)
+# "request_text", not "request": pytest reserves the name "request" for its own fixture.
+@pytest.mark.parametrize("request_text", ["", "   ", "\n\t"])
+def test_empty_request_rejected_and_nothing_written(queue_path: Path, request_text: str) -> None:
+    result = _flag(queue_path, "E1003", request_text, REASON)
 
     assert result == {"error": "INVALID_REQUEST", "detail": "request must not be empty"}
     assert not queue_path.exists()

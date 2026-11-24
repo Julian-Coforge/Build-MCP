@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-23, milestone M3 (`check_request_eligibility` as a pure function and as the third MCP tool). M1, M2 and M3 are verified.
+**Last updated:** 2026-11-24, milestone M4 in progress (`flag_for_human_review` as a plain function). M1, M2 and M3 are verified.
 
 ---
 
@@ -17,7 +17,7 @@ Policy decisions are made by plain, tested Python functions. The LLM only interp
 
 ## 2. Current state
 
-M0 is done. In M1, the mock employee data, its validating loader and `get_employee_info` exist as plain functions with tests, as does the JSON logging module. The real MCP server exposes one tool, `get_employee_info`, over streamable HTTP, and `scripts/client_demo.py` calls it. In M2, the role-entitlement policy (`data/policy.json`) and its validating loader exist with tests, as does `get_policy_limits`, as a pure function and as the server's second MCP tool. In M3, `check_request_eligibility` exists as a pure function and as the server's third MCP tool. `flag_for_human_review` follows in M4.
+M0 is done. In M1, the mock employee data, its validating loader and `get_employee_info` exist as plain functions with tests, as does the JSON logging module. The real MCP server exposes one tool, `get_employee_info`, over streamable HTTP, and `scripts/client_demo.py` calls it. In M2, the role-entitlement policy (`data/policy.json`) and its validating loader exist with tests, as does `get_policy_limits`, as a pure function and as the server's second MCP tool. In M3, `check_request_eligibility` exists as a pure function and as the server's third MCP tool. In M4, `flag_for_human_review` exists as a plain function with injected dependencies (the queue path and the current time), with tests. Wrapping it as the fourth MCP tool comes next.
 
 | File | What it does | Status |
 |---|---|---|
@@ -28,6 +28,7 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 | `src/it_requests/employees.py` | `normalize_employee_id`, `tenure_months` and `get_employee_info`: the pure function behind the MCP tool (REQUIREMENTS §7.1). | Tested, 100% coverage |
 | `src/it_requests/policy.py` | `normalize_role` and `get_policy_limits`: the pure function behind the MCP tool (REQUIREMENTS §7.2). | Tested, 100% coverage |
 | `src/it_requests/eligibility.py` | `add_months` and `check_request_eligibility`: the REQUIREMENTS §4.3 algorithm, the only source of truth for eligibility. | Tested, 100% coverage |
+| `src/it_requests/reviews.py` | `ESCALATION_CODES`, `parse_reason` and `flag_for_human_review`: the only side-effecting tool, which appends review tickets to a JSON queue file (REQUIREMENTS §2.3, §7.4). | Tested, 94% coverage (write-failure path untested) |
 | `src/it_requests/observability.py` | `request_id_var`, `REDACTED_KEYS`, `JsonFormatter`, `log_event` and `configure_logging`: structured JSON logging for the server and, later, the agent (PLAN §5). | Tested, 100% coverage; used by `server.py` |
 | `src/it_requests/server.py` | `build_server(directory, policy_table, *, as_of)` registers the `get_employee_info`, `get_policy_limits` and `check_request_eligibility` tools as thin wrappers. Both log through one helper, `_call_and_log`. `main()` configures logging, loads both data files, logs `server.start` and serves on `http://127.0.0.1:8000/mcp`. | Integration-tested in-process; `main()` checked by hand |
 | `scripts/client_demo.py` | Connects over HTTP, lists the tools, calls `get_employee_info` for `E1001`, `" e1001 "` and `E9999`, then calls `get_policy_limits` for `standard`, `Manager` and `intern`, then calls `check_request_eligibility` for five cases, one per kind of verdict plus an unknown item (screenshot for deliverable #2). | Checked by hand |
@@ -95,6 +96,23 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 
   Keys that don't apply are `null`, and all dates are ISO strings.
 
+### `reviews.py` in detail
+
+- **`ESCALATION_CODES`:** `E1` to `E11` (REQUIREMENTS §5).
+- **`parse_reason(reason)`:** the reason must be a code from `E1` to `E11` (any case), a colon, then a non-empty explanation. It returns `(CODE, explanation)`, or `None`.
+  - The check is a full-match regex with an explicit 1–11 alternation, so `E11` is never read as `E1`, and `E12`, `E0` and `E1E2` fail.
+- **`flag_for_human_review(employee_id, request, reason, *, queue_path, now)`:**
+  - **Validation first:** an empty request returns `INVALID_REQUEST`. A bad reason returns `INVALID_REASON`. Nothing is read or written until both pass.
+  - **Employee ID:** stripped, but not validated and not required to exist, so `E1` escalations can still be recorded.
+  - **Duplicates:** the same employee (compared ignoring case and surrounding spaces) with the same request (compared stripped) returns the existing ticket with `duplicate: True`, and nothing is written.
+  - **New ticket:** appended with all seven §2.3 fields. `review_id` is `REV-` plus the next four-digit number, and `created_at` is `now.isoformat()`.
+  - **Returns:** `{"review_id", "status": "pending", "reason_code", "duplicate"}`.
+- **Queue file:**
+  - The format is `{"tickets": [...]}`. A missing file means an empty queue. The file and its folder are created on the first write.
+  - Writes are atomic: a temp file in the same folder is fsynced, then moved over the queue with `os.replace`. The temp file is removed if anything fails.
+  - An unreadable file, or one with the wrong shape (no `tickets` list, or a ticket missing a string field), returns `QUEUE_UNAVAILABLE`, and the file is left untouched.
+  - A failed write also returns `QUEUE_UNAVAILABLE`.
+
 ### `observability.py` in detail
 
 - **`log_event(logger, event, level=INFO, **fields)`:** the one helper every call site uses. It passes `fields` to the formatter through `extra={"fields": ...}`.
@@ -144,6 +162,7 @@ Build-MCP/
 │   ├── employees.py        # get_employee_info and its helpers (pure)
 │   ├── policy.py           # get_policy_limits and normalize_role (pure)
 │   ├── eligibility.py      # check_request_eligibility and add_months (pure)
+│   ├── reviews.py          # flag_for_human_review and parse_reason (writes the review queue)
 │   ├── observability.py    # JSON logging: log_event, configure_logging
 │   ├── server.py           # MCP server: build_server (thin tool wrappers) and main
 │   └── py.typed            # marks the package as typed for mypy
@@ -151,7 +170,7 @@ Build-MCP/
 │   ├── employees.json      # mock employees (REQUIREMENTS §8)
 │   └── policy.json         # role entitlements (REQUIREMENTS §4.1)
 ├── tests/
-│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_observability
+│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability
 │   └── integration/        # conftest (server, server_log), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool
 ├── scripts/
 │   └── client_demo.py      # calls the running server over HTTP
@@ -349,6 +368,24 @@ Each entry: the decision, and why.
 47. **The eligibility tool logs `data_version` as a dict of both versions.**
     *Why:* the verdict depends on both data files. The dict matches the result's `data_versions`, so a log line and a result can be compared directly.
 
+48. **`flag_for_human_review` takes `queue_path` and `now` as arguments.**
+    *Why:* tests use `tmp_path` and a fixed time, so they are deterministic and never touch the real queue. The server passes the real path and the real time.
+
+49. **Arguments are validated before the queue is read or written.**
+    *Why:* REQUIREMENTS §7.4. A rejected call leaves no trace, so a bad argument can never create a half-valid ticket.
+
+50. **The duplicate key is employee plus request, compared ignoring case and surrounding spaces on the ID, and stripped on the request.**
+    *Why:* §7.4 makes the tool idempotent. A retried call, for example after a timeout, returns the same ticket. This also protects C7 (at most one flag per request). The first ticket's reason code wins.
+
+51. **The queue is written atomically: a temp file, fsync, then `os.replace`.**
+    *Why:* a crash mid-write leaves either the old file or the new one, never half a JSON file. The temp file is in the same folder, because a replace across filesystems isn't guaranteed to be atomic.
+
+52. **A corrupt queue file is reported as `QUEUE_UNAVAILABLE` and never overwritten.**
+    *Why:* "fixing" it by rewriting would destroy every existing ticket. A human must look at it. The shape of every ticket is checked when the file is read, so the duplicate check can't crash on a hand-edited file.
+
+53. **The employee ID is stored stripped, not byte-for-byte as sent.**
+    *Why:* the M4 prompt says so, and stray spaces would otherwise break duplicate detection. REQUIREMENTS §2.3 says "stored as given". This was flagged in the red step, and the decision was to go ahead with stripping. "As given" is read as "even if the employee doesn't exist".
+
 ## 6. Change log
 
 | Date | Milestone | Change | Why |
@@ -380,6 +417,7 @@ Each entry: the decision, and why.
 | 2026-11-23 | M3 | Failing integration tests for the `check_request_eligibility` tool (`test_server_eligibility_tool.py`); tool-list test expects three tools | TDD red step |
 | 2026-11-23 | M3 | `check_request_eligibility` MCP tool; `status_of` option on `_call_and_log`; client demo eligibility section | Third tool exposed over MCP and proven end to end over HTTP |
 | 2026-11-24 | M4 | Failing tests for `flag_for_human_review` and `parse_reason` (`test_reviews.py`) | TDD red step |
+| 2026-11-24 | M4 | `reviews.py`: `ESCALATION_CODES`, `parse_reason`, `flag_for_human_review` with an atomic JSON queue; test parameter renamed from `request` to `request_text` | REQUIREMENTS §7.4 as a plain function with injected dependencies |
 
 ## 7. Known issues and fixes
 

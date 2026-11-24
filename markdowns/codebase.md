@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-23, milestone M3 (`check_request_eligibility` as a pure function and as the third MCP tool). M1 and M2 are verified.
+**Last updated:** 2026-11-23, milestone M3 (`check_request_eligibility` as a pure function and as the third MCP tool). M1, M2 and M3 are verified.
 
 ---
 
@@ -410,4 +410,13 @@ Checked by the main Claude session on a copy of branch `m2-get-policy-limits` at
 - 106 unit tests and 14 integration tests pass. Coverage is 100%.
 - Each step has a red commit before its green commit.
 - Both tool descriptions match REQUIREMENTS §7.1 and §7.2 exactly. `"none"` and `null` reach the client as distinct values.
+
+### 7.5 M3 verification (2026-11-23)
+
+Checked by the main Claude session on a copy of branch `m3-check-eligibility` at `c1c6a02`, Python 3.14.6:
+- `ruff format --check`, `ruff check` and `mypy --strict` all pass.
+- 152 unit tests and 24 integration tests pass. Coverage is 100%.
+- Each step has a red commit before its green commit.
+- `eligibility.py` follows the REQUIREMENTS §4.3 step order exactly. All 13 rows of the §8 table, the boundary dates and the month-end clamp are tested.
+- One note: `eligibility.py` uses an `assert` to narrow types before the refresh step. The `ItemLimit` validator already guarantees that condition, so it is safe here. Python's `-O` flag strips asserts, so never rely on one for a check the data could actually fail.
 

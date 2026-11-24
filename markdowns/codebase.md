@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-24, milestone M6 in progress (constraint guards in `agent/guards.py`; the ReAct loop is still to come). M1 to M5 are verified.
+**Last updated:** 2026-11-24, milestone M6 in progress (constraint guards done; failing tests for the ReAct tool definitions, the ReAct system prompt and cached system blocks). M1 to M5 are verified.
 
 ---
 
@@ -269,7 +269,7 @@ Build-MCP/
 │   └── policy.json         # role entitlements (REQUIREMENTS §4.1)
 ├── tests/
 │   ├── conftest.py         # FakeMessages: a fake Anthropic messages API (real SDK types)
-│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report, test_guards
+│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report, test_guards, test_tools and test_prompts (M6, red)
 │   └── integration/        # conftest (server, server_log), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools, test_agent_single_call
 ├── scripts/
 │   ├── client_demo.py      # calls the running server over HTTP
@@ -640,6 +640,7 @@ Each entry: the decision, and why.
 | 2026-11-24 | M5 | `agent/mcp_bridge.py`, `agent/single_call.py`, `cost_report.py`, `read_ledger` and `usage_numbers` refactors, `scripts/agent_once.py`, `.env.example`, `python-dotenv` pin, `make agent-once` and `make cost-report` | Brief step 5a: the agent makes one tool call through MCP; the live run is ready for Julian |
 | 2026-11-24 | M6 | Failing tests for the constraint guards (`test_guards.py`, 43 test functions): C1, C2, C3, C6, C7 and the decision table's required calls, with observations built from the real tool functions | TDD red step |
 | 2026-11-24 | M6 | `agent/guards.py`: `Observation`, `FinalAnswer`, `check_tool_call`, `check_final_answer`, `violation_message` | C1, C2, C3, C6 and C7 enforced in code before the ReAct loop uses them |
+| 2026-11-24 | M6 | Failing tests for the ReAct tools (`test_tools.py`), the ReAct system prompt (`test_prompts.py`) and `system_blocks` (`test_llm.py`); the `prompt_version` assertion moves to `m6-v1` | TDD red step |
 
 ## 7. Known issues and fixes
 

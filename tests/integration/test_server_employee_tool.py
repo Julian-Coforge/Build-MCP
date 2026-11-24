@@ -25,6 +25,7 @@ async def test_lists_exactly_the_registered_tools(server: MCPServer) -> None:
     # Sorted, so the test doesn't depend on registration order.
     assert sorted(t.name for t in result.tools) == [
         "check_request_eligibility",
+        "flag_for_human_review",
         "get_employee_info",
         "get_policy_limits",
     ]

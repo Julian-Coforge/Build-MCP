@@ -418,6 +418,7 @@ Each entry: the decision, and why.
 | 2026-11-23 | M3 | `check_request_eligibility` MCP tool; `status_of` option on `_call_and_log`; client demo eligibility section | Third tool exposed over MCP and proven end to end over HTTP |
 | 2026-11-24 | M4 | Failing tests for `flag_for_human_review` and `parse_reason` (`test_reviews.py`) | TDD red step |
 | 2026-11-24 | M4 | `reviews.py`: `ESCALATION_CODES`, `parse_reason`, `flag_for_human_review` with an atomic JSON queue; test parameter renamed from `request` to `request_text` | REQUIREMENTS §7.4 as a plain function with injected dependencies |
+| 2026-11-24 | M4 | Failing integration tests for the `flag_for_human_review` tool and an all-tools walk-through; `review_queue_path` and fixed-clock fixtures | TDD red step |
 
 ## 7. Known issues and fixes
 

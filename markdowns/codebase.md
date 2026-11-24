@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-24, milestone M5 (cost maths, the budget gate, tracing, the LLM wrapper and the agent's single tool call; first live call made and verified). M1 to M5 are verified.
+**Last updated:** 2026-11-24, milestone M6 in progress (the ReAct loop `run_agent` with guards, step cap and E11 fallback, and the printed trace `format_trace`; tested with the fake model only). Eval cases T1 to T12, grading, `scripts/run_agent.py` and `scripts/run_eval.py` are ready but not yet run (paid). The server now logs the agent's `request_id` from `_meta`. M1 to M5 are verified.
 
 ---
 
@@ -30,16 +30,24 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 | `src/it_requests/eligibility.py` | `add_months` and `check_request_eligibility`: the REQUIREMENTS §4.3 algorithm, the only source of truth for eligibility. | Tested, 100% coverage |
 | `src/it_requests/reviews.py` | `ESCALATION_CODES`, `parse_reason` and `flag_for_human_review`: the only side-effecting tool, which appends review tickets to a JSON queue file (REQUIREMENTS §2.3, §7.4). | Tested, 94% coverage (write-failure path untested); used by `server.py` |
 | `src/it_requests/agent/costs.py` | `cost_usd`, `ledger_total`, `check_budget` and `budget_from_env`, with `UnknownModelError`, `LedgerCorruptError` and `BudgetExceededError`: pure cost maths and the budget gate (PLAN §4). | Tested, 100% coverage; not yet called by any component |
-| `src/it_requests/agent/llm.py` | `LLMClient` (the one wrapper for paid model calls) and the `CreateMessage` protocol. Each call writes a cost-ledger line, an `llm.call` span and an `llm.call` log line. | Tested with a fake, 100% coverage; not yet called by any component |
-| `src/it_requests/agent/prompts.py` | `PROMPT_VERSION` (`m5-v1`) and `SYSTEM_PROMPT_SINGLE_CALL`. | Covered by the `LLMClient` tests |
-| `src/it_requests/agent/mcp_bridge.py` | `MCPToolClient` protocol, `to_claude_tools` (MCP tool list to Claude tool definitions) and `call_tool` (one tool call with `request_id` and `traceparent` in `_meta`). | Tested, 100% coverage |
+| `src/it_requests/agent/llm.py` | `LLMClient` (the one wrapper for paid model calls) and the `CreateMessage` protocol. Each call writes a cost-ledger line, an `llm.call` span and an `llm.call` log line. | Tested with a fake, 100% coverage; used by `single_call.py` |
+| `src/it_requests/agent/tools.py` | `with_thought`, `FINAL_ANSWER_TOOL`, `strip_thought`, `parse_final_answer`: the ReAct tool definitions. | Unit-tested on the real server schemas, 100% coverage |
+| `src/it_requests/agent/loop.py` | `run_agent`: the ReAct loop, with guards, the step cap and the E11 fallback. `AgentRequest`, `AgentResult`, `Step`, `GuardEvent`. | 20 integration tests with the fake model and the real in-process server, 99% coverage |
+| `src/it_requests/agent/trace_format.py` | `format_trace`: the printed Thought / Action / Observation / Final Answer trace. Pure. | Unit-tested, 100% coverage |
+| `src/it_requests/agent/prompts.py` | `PROMPT_VERSION` (`m6-v1`), `SYSTEM_PROMPT_SINGLE_CALL` (M5) and `SYSTEM_PROMPT_REACT` (rules copied from REQUIREMENTS §5, §6, §6.1, §10, plus the working method). | `test_prompts.py` checks every code, constraint and key tool name, and no per-request content |
+| `src/it_requests/agent/mcp_bridge.py` | `MCPToolClient` protocol, `to_claude_tools` (MCP tool list to Claude tool definitions) and `call_tool` (one tool call with `request_id` and `traceparent` in `_meta`), plus the shared span helpers `traceparent` and `span_safe_arguments`. | Tested, 100% coverage |
 | `src/it_requests/agent/single_call.py` | `run_single_tool_call`: one model call, then the one tool call Claude picks, run on the server, inside an `agent.run` trace. | Integration-tested with the fake and the in-process server, 100% coverage |
+| `src/it_requests/agent/guards.py` | `check_tool_call` (C6, C7 before a call), `check_final_answer` (C1, C2, C3, required calls, C7 on the answer) and `violation_message`. Pure. | Unit-tested against results from the real tool functions, 100% coverage |
 | `src/it_requests/cost_report.py` | `summarise`, `format_report` and `main`: spend from the cost ledger, in total and by env, stage and request, plus the budget left. | Tested, 100% coverage |
 | `scripts/agent_once.py` | The live, paid entry point. Loads `.env`, runs the budget gate first, then makes one real Haiku call against the running server and prints the tool, arguments, result status, cost and trace path. | Not unit-tested (thin wiring of tested parts); type-checks with `mypy --strict`; not yet run |
+| `scripts/run_agent.py` | One live, paid ReAct run for `--case T1` or `--text "..."`: budget gate first, prints `format_trace` and the cost, saves `traces/<case or request_id>.txt`. | Thin wiring; `mypy --strict` clean; not yet run |
+| `scripts/run_eval.py` | Live, paid eval: `--cases` (default T1-T4) x `--repeat` (default 3) on `--model` (default Sonnet). Prints the run count and estimate, asks `Continue? [y/N]`, checks the budget gate before every run, writes `evals/results/<UTC>-<model>.jsonl`, prints the pass table and total cost. | Thin wiring; `mypy --strict` clean; not yet run |
+| `src/it_requests/evals.py` | `load_cases`, `grade`, `summarise`, `format_summary`, `resolve_model`, `estimate_usd`. | Unit-tested, 100% coverage |
+| `evals/cases.json` | T1 to T12 (`cases-v1`): request text, expected decision and code, required tools. | Loaded and checked by `test_evals.py` |
 | `.env.example` | Placeholder `ANTHROPIC_API_KEY` and `BUDGET_USD=4.00`. Copied to the gitignored `.env`. | Committed; no real key |
 | `src/it_requests/tracing.py` | `JsonLinesSpanExporter` and `make_tracer`: OpenTelemetry spans written as JSON lines to `traces/<request_id>.jsonl` (PLAN §6). | Tested, 97% coverage (an unused `force_flush` return); not yet called by any component |
 | `src/it_requests/observability.py` | `request_id_var`, `REDACTED_KEYS`, `JsonFormatter`, `log_event` and `configure_logging`: structured JSON logging for the server and, later, the agent (PLAN §5). | Tested, 100% coverage; used by `server.py` |
-| `src/it_requests/server.py` | `build_server(directory, policy_table, *, as_of)` registers all four tools (`get_employee_info`, `get_policy_limits`, `check_request_eligibility`, `flag_for_human_review`) as thin wrappers. Both log through one helper, `_call_and_log`. `main()` configures logging, loads both data files, logs `server.start` and serves on `http://127.0.0.1:8000/mcp`. | Integration-tested in-process; `main()` checked by hand |
+| `src/it_requests/server.py` | `build_server(directory, policy_table, *, as_of)` registers all four tools (`get_employee_info`, `get_policy_limits`, `check_request_eligibility`, `flag_for_human_review`) as thin wrappers. Both log through one helper, `_call_and_log`. `main()` configures logging, loads both data files, logs `server.start` and serves on `http://127.0.0.1:8000/mcp`. | Integration-tested in-process (including `request_id` from `_meta`); `main()` checked by hand |
 | `scripts/client_demo.py` | Connects over HTTP, lists the tools, calls `get_employee_info` for `E1001`, `" e1001 "` and `E9999`, then calls `get_policy_limits` for `standard`, `Manager` and `intern`, then calls `check_request_eligibility` for five cases, one per kind of verdict plus an unknown item, then calls `flag_for_human_review` three times: a new ticket, the same call again (duplicate) and an invalid reason (screenshot for deliverable #2). | Checked by hand |
 | `examples/step1/server.py`, `client.py` | Brief step 1: a minimal "Demo" MCP server with a trivial `get_employee_id` tool, plus a client that calls it. | Kept unchanged as submission evidence |
 
@@ -162,6 +170,15 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
   - **Ledger:** appends one line to the cost ledger with `ts`, `request_id`, `run_id`, `stage`, `model`, `prompt_version`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `cost_usd`, `latency_ms`, `env` and `stop_reason`. `null` cache counts are recorded as 0.
   - **Log:** logs `llm.call` at INFO with the same numbers. It never logs messages, the system prompt, tools or the request text.
   - **Failure:** if `create` raises, the span is marked `ERROR`, no ledger line is written, and the exception propagates. There is no retry, because the SDK already retries.
+  - **`system`** may be a string or a list of text blocks; either is passed through unchanged.
+- **`system_blocks(text)`:** one text block with `cache_control: {"type": "ephemeral"}`. The cache prefix runs tools, then system, then messages, so this one breakpoint caches the tools and the system prompt for every loop step after the first.
+
+### `agent/tools.py` in detail
+
+- **`with_thought(claude_tools)`:** deep-copies each tool, puts a required string `thought` first in `properties` and `required`, sets `additionalProperties: false` in the schema and `strict: true` on the tool. `strict` is a tool-level field in the Messages API, not a schema key.
+- **`FINAL_ANSWER_TOOL`:** `final_answer`, strict. Properties `thought`, `decision` (enum approve/deny/escalate), `rule_id` and `review_id` (string or null), `reason_code` (E1 to E11 from `reviews.ESCALATION_CODES`, or null) and `draft_reply`. All are required; null means "not applicable".
+- **`strip_thought(tool_input)`:** returns `(thought, arguments)` without mutating the input. A missing `thought` becomes `""`.
+- **`parse_final_answer(tool_input)`:** returns a `FinalAnswer`, or raises `ValueError` on a bad `decision` or a non-string field. It checks types only; `check_final_answer` decides whether the answer is allowed.
 
 ### `agent/mcp_bridge.py` and `agent/single_call.py` in detail
 
@@ -178,6 +195,34 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
   - Otherwise it runs that tool in a `tool.<name>` child span, sending that span's `traceparent`. The span records `tool`, `arguments` (as JSON, with `request` and `reason` redacted), `result_status` and `data_version` when present. It never records the result.
   - Logs `run.end` with the tool, result status, `cost_usd` and tokens, and sets `total_cost_usd` and `total_tokens` on the root span.
   - Returns `request_id`, `run_id`, `tool`, `arguments`, `result_status`, `result` and `cost_usd`.
+
+### `agent/guards.py` in detail
+
+- **`Observation(tool, arguments, result)`** and **`FinalAnswer(*, decision, rule_id, review_id=None, reason_code=None, draft_reply=None)`:** frozen dataclasses. `FinalAnswer` is keyword-only, and `rule_id` must be given but may be `None`.
+- **`check_tool_call(tool, observations)`:** returns `"C6_STEP_LIMIT"` when 8 investigation calls are already made (failed ones count; the flag does not), `"C7_ALREADY_FLAGGED"` when a flag already returned a `review_id`, else `None`.
+- **`check_final_answer(answer, observations)`:** returns every violation, in the order C1, C2, C3, `REQUIRED_CALLS`, C7.
+  - Approve and deny read the **latest** successful eligibility result (`status`, `rule_id`).
+  - Deny and escalate need the rule ID or review ID in `draft_reply` as a whole token, so `R-REFRESH` is not matched inside `R-REFRESH-OK`.
+  - Escalate compares against the first flag that returned a `review_id`. E7 also needs a successful `get_employee_info` and `check_request_eligibility` before that flag.
+  - Error results never satisfy `REQUIRED_CALLS`.
+- **`violation_message(codes)`:** one sentence per code, joined, for the loop to send back to the model. An unknown code raises `KeyError`, because that is a bug in the loop.
+- **Not checked yet:** that an E7 check returned `NOT_ELIGIBLE` (§5), and that the answer's `reason_code` matches the flag's.
+
+### `agent/loop.py` in detail
+
+- **`run_agent(request, *, llm, mcp_client, tracer, logger, max_model_calls=12)`:**
+  - Sends the tools as `with_thought(to_claude_tools(...)) + [FINAL_ANSWER_TOOL]`, the system prompt as `system_blocks(SYSTEM_PROMPT_REACT)`, and a first user message of `"Request ID: ...\n\n"` plus the request text.
+  - Each turn makes one `llm.call` (stage `react_step_<n>`) with a snapshot of the messages. The assistant content goes back unchanged, so thinking blocks keep their signature. All `tool_result` blocks go back in one user message.
+  - **MCP tool:** `check_tool_call` first. A blocked call gets an `is_error` tool_result with `violation_message`, a `guard.blocked` WARN line, and no server call. Otherwise the thought is stripped, the server is called inside a `tool.<name>` span, and a `Step` is recorded. A tool's own error dict is sent as normal data, not `is_error`.
+  - **`final_answer`:** `parse_final_answer`, then `check_final_answer`. A rejection (including `INVALID_FINAL_ANSWER`) goes back as `is_error`. One correction is allowed.
+  - **No tool_use:** the reply is `"Call final_answer to finish."`, which counts as a model call.
+- **Fallback (E11), run by the code:** the model-call limit, a second rejected final answer, or a turn after a C6 block that doesn't call `flag_for_human_review`. If a ticket exists, it is reused with its own code (C7). Otherwise the code flags with `"E11: <why>."`, using the last `employee_id` argument, else the first `E####` in the request text, else `UNKNOWN`. The reply is fixed text with the `review_id`. `agent.fallback` is logged at WARN.
+- **Spans:** `agent.run` (request_id, run_id, prompt_version, model; at the end decision, rule_id or reason_code, review_id, fallback, total_cost_usd, total_tokens), with `llm.call` and `tool.*` children. Tool spans carry the redacted arguments, `result_status` and `data_version`, but **not the thought**: it can repeat the employee's name.
+- **Logs:** `run.start`, `react.action`, `react.observation` (status only), `guard.blocked`, `agent.fallback`, `run.end` at INFO or WARN. The request text, thoughts, arguments and draft reply are at DEBUG only.
+
+### `agent/trace_format.py` in detail
+
+- **`format_trace(result)`:** `Thought:`, `Action: tool({json})` and `Observation: {full result}` per step, a `GUARD: blocked <tool> (<codes>)` line after the step it followed, the final thought, then `Final Answer: APPROVE (rule R-NEW)` or `ESCALATE (E6, review REV-0001)` (labelled `Final Answer (fallback)` on a fallback) and `Reply:`. The full observation is fine here: this text is printed for the graded trace, not logged.
 
 ### `cost_report.py` in detail
 
@@ -201,10 +246,12 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 ### `server.py` in detail
 
 - **`build_server(directory, policy_table, *, as_of=REFERENCE_DATE, review_queue_path=REVIEW_QUEUE_FILE, clock=_utc_now)`:** a factory. Tests inject their own data, and importing the module never reads files or opens ports. The parameter is called `policy_table` because `policy` is the module name. Tests pass a `tmp_path` queue and a fixed clock.
-- **`_call_and_log(tool, call, *, data_version, inputs, result_fields, status_of)`:** the one helper every tool uses.
+- **`_call_and_log(tool, call, *, ctx, data_version, inputs, result_fields, status_of)`:** the one helper every tool uses.
+  - Sets `request_id_var` from the call's `_meta` (`_request_id(ctx)`) for the length of the call, then resets it, so every `tool.call` line carries the agent's `request_id`. Only a string is accepted.
   - Times the call and logs one `tool.call` event, then returns the result unchanged, including error dicts. `is_error` therefore stays `False` for tool errors.
   - The event fields are `tool`, the inputs, any result-derived fields, `status`, `data_version` and `duration_ms`.
   - `status_of` decides the logged status. The default is `ok` or the error code.
+- **`request_id` from `_meta` (MCP SDK 2.3):** each tool takes a `ctx: Context[Any, Any]` parameter. The SDK injects it and leaves it out of the input schema, so the model sees the same arguments. `ctx.request_context.meta` is a dict; over `Client` it always holds the SDK's own `io.modelcontextprotocol/*` keys, so `request_id` is read with `.get`.
 - **The `get_employee_info` tool:**
   - Logs `employee_id`, the raw input exactly as sent.
   - Logs `resolved_employee_id`: the normalised ID on success, or `null` on any error.
@@ -243,6 +290,10 @@ Build-MCP/
 │   │   ├── costs.py        # cost_usd, ledger_total, check_budget, budget_from_env (pure)
 │   │   ├── llm.py          # LLMClient: every model call, with ledger, span and log
 │   │   ├── prompts.py      # PROMPT_VERSION and system prompts
+│   │   ├── guards.py       # C1-C3, C6, C7 and required-call checks (pure)
+│   │   ├── loop.py         # run_agent: the ReAct loop, guards, step cap, E11 fallback
+│   │   ├── tools.py        # thought on every tool, final_answer, parse helpers
+│   │   ├── trace_format.py # the printed Thought/Action/Observation trace
 │   │   ├── mcp_bridge.py   # MCP tools to Claude tool definitions; call one tool
 │   │   └── single_call.py  # run_single_tool_call (brief step 5a)
 │   ├── cost_report.py      # python -m it_requests.cost_report
@@ -255,11 +306,16 @@ Build-MCP/
 │   └── policy.json         # role entitlements (REQUIREMENTS §4.1)
 ├── tests/
 │   ├── conftest.py         # FakeMessages: a fake Anthropic messages API (real SDK types)
-│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report
-│   └── integration/        # conftest (server, server_log), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools, test_agent_single_call
+│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report, test_guards, test_tools, test_prompts, test_trace_format, test_evals
+│   └── integration/        # conftest (server, server_log), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools, test_agent_single_call, test_agent_loop, test_server_meta
 ├── scripts/
 │   ├── client_demo.py      # calls the running server over HTTP
-│   └── agent_once.py       # one live, paid agent run (brief step 5a)
+│   ├── agent_once.py       # one live, paid agent run (brief step 5a)
+│   ├── run_agent.py        # one live, paid ReAct run with the printed trace
+│   └── run_eval.py         # live, paid eval with a pass/fail table
+├── evals/
+│   ├── cases.json          # T1 to T12 (REQUIREMENTS §9)
+│   └── results/            # one JSONL file per eval run
 ├── examples/step1/         # brief step-1 demo (do not modify)
 ├── markdowns/              # REQUIREMENTS, PLAN, codebase, MILESTONES, prompts/
 ├── .github/workflows/ci.yml
@@ -313,6 +369,14 @@ make agent-once         # terminal 2: budget gate, one Haiku call, one tool call
 make cost-report        # spend so far from logs/cost_ledger.jsonl
 ```
 `python scripts/agent_once.py --model claude-sonnet-5-5 --env eval` uses Sonnet. The trace goes to `traces/REQ-0501.jsonl`.
+
+**Agent, full ReAct run and eval** (paid; the server must be running):
+```bash
+make agent CASE=T3      # one run of a case (Haiku by default), printed trace, traces/T3.txt
+python scripts/run_agent.py --text "E1002: can I get a headset?" --model sonnet
+make reset-reviews      # optional: start the eval with an empty review queue
+make eval               # T1-T4 x 3 on Sonnet: shows the estimate (about $1.02) and asks first
+```
 
 **Step-1 demo server and client:**
 ```bash
@@ -573,6 +637,48 @@ Each entry: the decision, and why.
 83. **`python-dotenv` loads `.env`, and the API key is never read by our code.**
     *Why:* `anthropic.Anthropic()` reads `ANTHROPIC_API_KEY` itself, so the key never passes through code that could print or log it (CLAUDE.md). `.env.example` is committed with placeholders only.
 
+84. **The guards use the latest eligibility result, and only successful results satisfy required calls.**
+    *Why:* if two checks disagree, an older `ELIGIBLE` must not back an approval; the agent escalates instead of picking the convenient verdict. An error result is not data, so it can't count as the lookup. C6 still counts every call, failed or not, so a model retrying a bad ID reaches the limit.
+
+85. **Rule and review IDs must appear in the reply as whole tokens.**
+    *Why:* `R-REFRESH` is a substring of `R-REFRESH-OK`. A plain `in` check would pass a denial that cites the wrong rule.
+
+86. **`check_final_answer` returns all violations in a fixed order.**
+    *Why:* the model can fix every problem in one retry, and tests compare exact lists.
+
+87. **`strict: true` replaces forced `tool_choice`, and `thought` is the first property.**
+    *Why:* Sonnet 5.5 rejects forced tool choice, and strict mode still guarantees schema-valid arguments. The model writes properties in order, so it states its reason before filling in the arguments.
+
+88. **The system prompt copies the written rules and holds no per-request content.**
+    *Why:* the model applies REQUIREMENTS word for word instead of inventing rules. Identical text on every run is what makes it cacheable, and `system_blocks` caches it with the tools.
+
+89. **`parse_final_answer` raises `ValueError` instead of returning an error dict.**
+    *Why:* it is called by the loop, not exposed as a tool, so CLAUDE.md rule 6 doesn't apply. A refusal or a `max_tokens` cut-off can break the schema even in strict mode; the loop catches the error and tells the model.
+
+90. **The code, not the model, escalates when a run can't end cleanly (the E11 fallback).**
+    *Why:* "never guess" must hold even when the model misbehaves. Hitting the model-call limit, a second rejected answer, or ignoring the step limit all end in one ticket and a fixed, safe reply, with no further paid call.
+
+91. **Thoughts go to DEBUG logs and the printed trace, never to spans.**
+    *Why:* a thought can repeat the employee's name, and trace files are kept on disk like logs (CLAUDE.md). The prompt asked for the thought on the tool span; this was flagged and accepted at the red step.
+
+92. **Each model call gets a snapshot of the messages, and the assistant content is sent back unchanged.**
+    *Why:* the API checks thinking-block signatures on the next turn, so blocks must not be rebuilt. The snapshot also keeps the fake's recorded calls accurate.
+
+93. **`traceparent` and `span_safe_arguments` moved from `single_call.py` to `mcp_bridge.py`.**
+    *Why:* the loop and the single call now share one copy of the redaction rule.
+
+94. **The server reads `request_id` through an injected `Context` parameter.**
+    *Why:* it is the SDK 2.3 way to reach a request's `_meta`, and the SDK leaves `Context` out of the input schema, so what the model sees is unchanged (pinned by `test_server_meta.py`). The ContextVar is reset after each call, so a later call without meta can't inherit the ID.
+
+95. **Eval logic lives in `it_requests.evals`, not in the scripts.**
+    *Why:* grading decides what "pass" means, so it must be tested. The scripts only wire live services to tested functions, like `agent_once.py`.
+
+96. **A fallback run never passes, and only successful tool calls count as required calls.**
+    *Why:* a fallback means the model didn't finish on its own, even if the code's E11 escalation happens to match. Counting only successful calls is the same rule the guards use.
+
+97. **`run_eval.py` asks before spending and checks the budget gate before every run.**
+    *Why:* a 12-run Sonnet eval costs about $1 (estimate), a quarter of the budget. The prompt keeps a human in the loop, and a per-run gate stops cleanly with the results so far on disk.
+
 ## 6. Change log
 
 | Date | Milestone | Change | Why |
@@ -615,6 +721,14 @@ Each entry: the decision, and why.
 | 2026-11-24 | M5 | `agent/llm.py` (`LLMClient`, `CreateMessage`) and `agent/prompts.py` (`PROMPT_VERSION`, `SYSTEM_PROMPT_SINGLE_CALL`) | One wrapper for every paid model call, so cost tracking and tracing can't be bypassed |
 | 2026-11-24 | M5 | Failing tests for the MCP bridge, the cost report and the agent's single tool call (`test_mcp_bridge.py`, `test_cost_report.py`, `test_agent_single_call.py`); `anyio_backend` fixture moved to `tests/conftest.py` | TDD red step |
 | 2026-11-24 | M5 | `agent/mcp_bridge.py`, `agent/single_call.py`, `cost_report.py`, `read_ledger` and `usage_numbers` refactors, `scripts/agent_once.py`, `.env.example`, `python-dotenv` pin, `make agent-once` and `make cost-report` | Brief step 5a: the agent makes one tool call through MCP; the live run is ready for Julian |
+| 2026-11-24 | M6 | Failing tests for the constraint guards (`test_guards.py`, 43 test functions): C1, C2, C3, C6, C7 and the decision table's required calls, with observations built from the real tool functions | TDD red step |
+| 2026-11-24 | M6 | `agent/guards.py`: `Observation`, `FinalAnswer`, `check_tool_call`, `check_final_answer`, `violation_message` | C1, C2, C3, C6 and C7 enforced in code before the ReAct loop uses them |
+| 2026-11-24 | M6 | Failing tests for the ReAct tools (`test_tools.py`), the ReAct system prompt (`test_prompts.py`) and `system_blocks` (`test_llm.py`); the `prompt_version` assertion moves to `m6-v1` | TDD red step |
+| 2026-11-24 | M6 | `agent/tools.py`, `SYSTEM_PROMPT_REACT` and `PROMPT_VERSION` `m6-v1` in `agent/prompts.py`, `system_blocks` and block-list `system` in `agent/llm.py` | Every Action carries a Thought, the decision comes back as data, and the fixed prompt prefix is cached |
+| 2026-11-24 | M6 | Failing tests for the ReAct loop (`tests/integration/test_agent_loop.py`) and the printed trace (`test_trace_format.py`); `build_message` in `tests/conftest.py` takes `tool_uses` (several tool_use blocks, ids `toolu_01`, `toolu_02`, ...) and `thinking` | TDD red step |
+| 2026-11-24 | M6 | `agent/loop.py` (`run_agent`, `AgentRequest`, `AgentResult`, `Step`, `GuardEvent`), `agent/trace_format.py` (`format_trace`); `traceparent` and `span_safe_arguments` moved to `mcp_bridge.py` | The ReAct loop with guards, the step cap and the E11 fallback enforced in code, plus the printed trace |
+| 2026-11-24 | M6 | `evals/cases.json` (T1 to T12, `cases-v1`); failing tests for the eval helpers (`test_evals.py`) and for the server logging `request_id` from `_meta` (`test_server_meta.py`) | TDD red step |
+| 2026-11-24 | M6 | `evals.py`; `server.py` reads `request_id` from `_meta`; `guards.cites` made public; `scripts/run_agent.py`, `scripts/run_eval.py`; `make agent` and `make eval` | Live runs with a printed trace, a graded eval, and server logs joined to the agent's `request_id` |
 
 ## 7. Known issues and fixes
 
@@ -682,6 +796,6 @@ Checked by the main Claude session on a copy of branch `m5-agent-single-call` at
 - **Correlation works across processes:** the server's `tool.call` log line carries the agent's `trace_id` (`4d2a925f…`), so agent and server logs can be joined on it.
 
 **Known gaps (not blocking):**
-- The server logs `request_id: null`. The agent sends `request_id` in `_meta`, but the server doesn't read it into `request_id_var` yet. Picking it up is a small M6 task.
+- ~~The server logs `request_id: null`.~~ Fixed in M6: each tool reads `request_id` from `_meta` (`test_server_meta.py`).
 - `cost_report` rounds to 4 decimal places, so a Haiku run shows as $0.0001. Showing 6 decimals would make dev spend readable.
 

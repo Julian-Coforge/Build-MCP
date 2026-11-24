@@ -1,6 +1,6 @@
 # Run from an activated virtualenv (source .venv/bin/activate).
 # `make check` runs the same steps as CI, in the same fast-to-slow order.
-.PHONY: install format lint type test audit check serve client-demo reset-reviews agent-once cost-report
+.PHONY: install format lint type test audit check serve client-demo reset-reviews agent-once cost-report agent eval
 
 install:
 	python -m pip install -e ".[dev]"
@@ -42,3 +42,12 @@ agent-once:
 # Spend so far from logs/cost_ledger.jsonl: total, by env, stage and request, and budget left.
 cost-report:
 	python -m it_requests.cost_report
+
+# One PAID agent run with the full printed trace. Pick a case: make agent CASE=T3 (default T1).
+CASE ?= T1
+agent:
+	python scripts/run_agent.py --case $(CASE)
+
+# PAID eval: T1-T4 x 3 on Sonnet by default. Prints the estimate and asks before spending.
+eval:
+	python scripts/run_eval.py

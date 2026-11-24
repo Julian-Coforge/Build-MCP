@@ -9,7 +9,7 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
-from anthropic.types import Message, TextBlock, ToolUseBlock, Usage
+from anthropic.types import Message, TextBlock, ThinkingBlock, ToolUseBlock, Usage
 
 
 class FakeMessages:
@@ -46,19 +46,28 @@ def build_message(
     cache_read_input_tokens: int | None = None,
     cache_creation_input_tokens: int | None = None,
     stop_reason: str = "tool_use",
+    tool_uses: list[tuple[str, dict[str, object]]] | None = None,
+    thinking: str | None = None,
 ) -> Message:
-    """A real SDK Message: an optional text block, then an optional tool_use block."""
+    """A real SDK Message: optional thinking, optional text, then tool_use blocks.
+
+    `tool_uses` gives several (name, input) pairs, one tool_use block each, with ids
+    toolu_01, toolu_02, ... in order. When it is given, tool_name and tool_input are ignored,
+    so every existing caller keeps its one-block behaviour.
+    """
     content: list[Any] = []
+    if thinking is not None:
+        # A signature makes it a real, replayable block: the loop must send it back as is.
+        content.append(ThinkingBlock(type="thinking", thinking=thinking, signature="sig_01"))
     if text is not None:
         content.append(TextBlock(type="text", text=text))
-    if tool_name is not None:
+    if tool_uses is None and tool_name is not None:
+        tool_uses = [
+            (tool_name, tool_input if tool_input is not None else {"employee_id": "E1002"})
+        ]
+    for index, (name, block_input) in enumerate(tool_uses or [], start=1):
         content.append(
-            ToolUseBlock(
-                type="tool_use",
-                id="toolu_01",
-                name=tool_name,
-                input=tool_input if tool_input is not None else {"employee_id": "E1002"},
-            )
+            ToolUseBlock(type="tool_use", id=f"toolu_{index:02d}", name=name, input=block_input)
         )
     return Message(
         id="msg_01",

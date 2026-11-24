@@ -16,7 +16,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from it_requests.agent.llm import LLMClient
+from it_requests.agent.llm import LLMClient, system_blocks
 from it_requests.agent.prompts import PROMPT_VERSION
 from it_requests.observability import JsonFormatter
 
@@ -137,7 +137,7 @@ def test_one_call_writes_one_ledger_line(
     assert line["run_id"] == "run-1"
     assert line["stage"] == "react_step_1"
     assert line["model"] == "claude-haiku-5-5"
-    assert line["prompt_version"] == PROMPT_VERSION == "m5-v1"
+    assert line["prompt_version"] == PROMPT_VERSION == "m6-v1"
     assert line["env"] == "dev"
     assert line["stop_reason"] == "tool_use"
     assert (line["input_tokens"], line["output_tokens"]) == (10_000, 2_000)
@@ -226,6 +226,32 @@ def test_request_uses_auto_tool_choice_adaptive_thinking_and_token_cap(
     assert sent["system"] == SYSTEM
     assert sent["messages"] == [{"role": "user", "content": REQUEST_TEXT}]
     assert sent["tools"] == TOOLS
+
+
+def test_block_list_system_prompt_is_passed_through_unchanged(
+    llm: LLMClient, fake_messages: Any, make_message: Callable[..., Message]
+) -> None:
+    fake_messages.queue(make_message())
+    blocks = system_blocks(SYSTEM)
+
+    llm.call(
+        request_id="REQ-0001",
+        run_id="run-1",
+        stage="react_step_1",
+        system=blocks,
+        messages=[{"role": "user", "content": REQUEST_TEXT}],
+        tools=TOOLS,
+    )
+
+    assert fake_messages.calls[0]["system"] is blocks
+
+
+def test_system_blocks_is_one_cached_text_block() -> None:
+    # The system prompt and tools are resent on every loop step. One ephemeral breakpoint on
+    # the system block caches tools + system, so steps 2 onwards read them from the cache.
+    assert system_blocks(SYSTEM) == [
+        {"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}
+    ]
 
 
 # --- Span ----------------------------------------------------------------------------------------

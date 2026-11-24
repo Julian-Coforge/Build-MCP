@@ -12,10 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
 
 from it_requests import config, eligibility, employees, policy, reviews
 from it_requests.data import EmployeeDirectory, PolicyTable, load_employees, load_policy
-from it_requests.observability import configure_logging, log_event
+from it_requests.observability import configure_logging, log_event, request_id_var
 
 HOST = "127.0.0.1"  # Loopback only: the mock server must never be reachable from the network.
 PORT = 8000
@@ -41,10 +42,25 @@ def _verdict_or_error(result: ToolResult) -> str:
     return str(result.get("error") or result["status"])
 
 
+def _request_id(ctx: Context[Any, Any]) -> str | None:
+    """The request_id the agent put in this call's _meta, or None.
+
+    MCP SDK 2.3: a tool parameter annotated Context is injected by the SDK and left out of
+    the tool's input schema, so the model sees the same arguments as before. The request's
+    _meta is ctx.request_context.meta. Over Client it is never None (the SDK adds its own
+    protocol keys), so request_id is read with .get. Only a string is trusted: _meta comes
+    from the client and ends up in every log line.
+    """
+    meta = ctx.request_context.meta or {}
+    value = meta.get("request_id")
+    return value if isinstance(value, str) else None
+
+
 def _call_and_log(
     tool: str,
     call: Callable[[], ToolResult],
     *,
+    ctx: Context[Any, Any],
     data_version: str | dict[str, str],
     inputs: dict[str, Any],
     result_fields: Callable[[ToolResult], dict[str, Any]] = _no_extra_fields,
@@ -57,19 +73,25 @@ def _call_and_log(
     `result_fields` adds log fields that depend on the result, such as resolved_employee_id.
     `status_of` decides the logged status; the default is "ok" or the error code.
     """
-    start = time.perf_counter()  # perf_counter: monotonic, unaffected by clock changes
-    result = call()
-    log_event(
-        logger,
-        "tool.call",
-        tool=tool,
-        **inputs,
-        **result_fields(result),
-        status=status_of(result),
-        data_version=data_version,
-        duration_ms=round((time.perf_counter() - start) * 1000, 3),
-    )
-    return result
+    # Set for the length of this call only, then reset: the next call (which may carry no
+    # meta) must not inherit it. The JSON formatter reads request_id from this ContextVar.
+    token = request_id_var.set(_request_id(ctx))
+    try:
+        start = time.perf_counter()  # perf_counter: monotonic, unaffected by clock changes
+        result = call()
+        log_event(
+            logger,
+            "tool.call",
+            tool=tool,
+            **inputs,
+            **result_fields(result),
+            status=status_of(result),
+            data_version=data_version,
+            duration_ms=round((time.perf_counter() - start) * 1000, 3),
+        )
+        return result
+    finally:
+        request_id_var.reset(token)
 
 
 def _resolved_employee(result: ToolResult) -> dict[str, Any]:
@@ -116,7 +138,7 @@ def build_server(
     # Return type must be dict[str, Any], not bare dict: with bare dict the SDK sends only
     # text and no structured_content (verified on mcp 2.3.0).
     @server.tool()
-    def get_employee_info(employee_id: str) -> dict[str, Any]:
+    def get_employee_info(employee_id: str, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Look up an employee's role, hire date, tenure, employment status, and the equipment currently issued to them. Use this first for any request about a specific employee."""  # noqa: E501
         # One line on purpose: the docstring is the tool description the model sees, and it
         # must equal REQUIREMENTS §7.1 exactly. A wrapped docstring would add line breaks.
@@ -124,6 +146,7 @@ def build_server(
             "get_employee_info",
             lambda: employees.get_employee_info(employee_id, directory=directory, as_of=as_of),
             data_version=directory.data_version,
+            ctx=ctx,
             # The raw input, so a bad ID stays visible exactly as sent. No name field:
             # employee names are never logged (CLAUDE.md).
             inputs={"employee_id": employee_id},
@@ -131,18 +154,21 @@ def build_server(
         )
 
     @server.tool()
-    def get_policy_limits(role: str) -> dict[str, Any]:
+    def get_policy_limits(role: str, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Return the equipment a role is entitled to, the maximum units per item, and the refresh interval in months. Use this to explain a decision or a denial."""  # noqa: E501
         # One line on purpose, as above: must equal REQUIREMENTS §7.2 exactly.
         return _call_and_log(
             "get_policy_limits",
             lambda: policy.get_policy_limits(role, policy=policy_table),
             data_version=policy_table.data_version,
+            ctx=ctx,
             inputs={"role": role},
         )
 
     @server.tool()
-    def check_request_eligibility(employee_id: str, item: str) -> dict[str, Any]:
+    def check_request_eligibility(
+        employee_id: str, item: str, ctx: Context[Any, Any]
+    ) -> dict[str, Any]:
         """Decide whether one unit of a catalog item is within policy for this employee. Returns ELIGIBLE, NOT_ELIGIBLE, or NEEDS_REVIEW, with the rule applied. This is the only source of truth for eligibility."""  # noqa: E501
         # One line on purpose, as above: must equal REQUIREMENTS §7.3 exactly.
         return _call_and_log(
@@ -152,13 +178,16 @@ def build_server(
             ),
             # Both files decide the verdict, so the log names both (same as data_versions).
             data_version={"employees": directory.data_version, "policy": policy_table.data_version},
+            ctx=ctx,
             inputs={"employee_id": employee_id, "item": item},
             result_fields=_eligibility_fields,
             status_of=_verdict_or_error,
         )
 
     @server.tool()
-    def flag_for_human_review(employee_id: str, request: str, reason: str) -> dict[str, Any]:
+    def flag_for_human_review(
+        employee_id: str, request: str, reason: str, ctx: Context[Any, Any]
+    ) -> dict[str, Any]:
         """Escalate a request to a human reviewer. Use this when any escalation trigger applies or the decision is not clear-cut. Do not use it for requests that are clearly approved or denied."""  # noqa: E501
         # One line on purpose, as above: must equal REQUIREMENTS §7.4 exactly.
         return _call_and_log(
@@ -167,6 +196,7 @@ def build_server(
                 employee_id, request, reason, queue_path=review_queue_path, now=clock()
             ),
             data_version=directory.data_version,
+            ctx=ctx,
             # Never log `request` (or the reason's explanation): it is free text that can hold
             # names, medical details (E9) or other personal data, and logs are kept longer and
             # read more widely than the queue. PLAN §5: raw request text is not logged at INFO.

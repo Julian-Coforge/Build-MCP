@@ -78,6 +78,14 @@ def build_message(
 
 
 @pytest.fixture
+def anyio_backend() -> str:
+    # The anyio pytest plugin (installed with mcp) runs async tests in both layers. Pin
+    # asyncio, because the server and client are only used on asyncio, and trio isn't
+    # installed. Moved here from tests/integration/ once unit tests became async too.
+    return "asyncio"
+
+
+@pytest.fixture
 def fake_messages() -> FakeMessages:
     return FakeMessages()
 

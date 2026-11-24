@@ -550,6 +550,7 @@ Each entry: the decision, and why.
 | 2026-11-24 | M5 | `tracing.py` (`JsonLinesSpanExporter`, `make_tracer`); `trace_id` and `span_id` in every log line | Traces per request, cross-referenced with logs (PLAN §5, §6) |
 | 2026-11-24 | M5 | Failing tests for `LLMClient` (`test_llm.py`); shared `FakeMessages` fake in `tests/conftest.py`; `anthropic==2.13.0` pinned and installed so the fake can build real SDK types | TDD red step |
 | 2026-11-24 | M5 | `agent/llm.py` (`LLMClient`, `CreateMessage`) and `agent/prompts.py` (`PROMPT_VERSION`, `SYSTEM_PROMPT_SINGLE_CALL`) | One wrapper for every paid model call, so cost tracking and tracing can't be bypassed |
+| 2026-11-24 | M5 | Failing tests for the MCP bridge, the cost report and the agent's single tool call (`test_mcp_bridge.py`, `test_cost_report.py`, `test_agent_single_call.py`); `anyio_backend` fixture moved to `tests/conftest.py` | TDD red step |
 
 ## 7. Known issues and fixes
 

@@ -1,0 +1,148 @@
+"""Tests for the MCP-to-Claude bridge: tool definitions and tool calls (PLAN §2, §5)."""
+
+from typing import Any
+
+import pytest
+from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
+
+from it_requests.agent.mcp_bridge import call_tool, to_claude_tools
+
+SCHEMA = {
+    "type": "object",
+    "properties": {"employee_id": {"type": "string"}},
+    "required": ["employee_id"],
+}
+
+
+# --- to_claude_tools ----------------------------------------------------------------------
+
+
+def test_to_claude_tools_maps_name_description_and_schema() -> None:
+    listed = ListToolsResult(
+        tools=[
+            Tool(name="get_employee_info", description="Look up an employee.", input_schema=SCHEMA),
+            Tool(name="get_policy_limits", description="Role limits.", input_schema=SCHEMA),
+        ]
+    )
+
+    assert to_claude_tools(listed) == [
+        {
+            "name": "get_employee_info",
+            "description": "Look up an employee.",
+            "input_schema": SCHEMA,
+        },
+        {"name": "get_policy_limits", "description": "Role limits.", "input_schema": SCHEMA},
+    ]
+
+
+def test_to_claude_tools_drops_mcp_only_fields() -> None:
+    # Claude's tool definition has no title or output_schema; sending them would be a 400.
+    listed = ListToolsResult(
+        tools=[
+            Tool(
+                name="t",
+                title="Title",
+                description="d",
+                input_schema=SCHEMA,
+                output_schema={"type": "object"},
+            )
+        ]
+    )
+
+    assert set(to_claude_tools(listed)[0]) == {"name", "description", "input_schema"}
+
+
+def test_missing_description_becomes_empty_string() -> None:
+    listed = ListToolsResult(tools=[Tool(name="t", input_schema=SCHEMA)])
+
+    assert to_claude_tools(listed)[0]["description"] == ""
+
+
+# --- call_tool --------------------------------------------------------------------------------
+
+
+class FakeClient:
+    """Records call_tool arguments and returns one canned CallToolResult."""
+
+    def __init__(self, result: CallToolResult) -> None:
+        self.result = result
+        self.calls: list[dict[str, Any]] = []
+
+    async def call_tool(
+        self, name: str, arguments: dict[str, Any], *, meta: dict[str, Any]
+    ) -> CallToolResult:
+        self.calls.append({"name": name, "arguments": arguments, "meta": meta})
+        return self.result
+
+
+TRACEPARENT = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+
+
+@pytest.mark.anyio
+async def test_call_tool_returns_structured_content_and_sends_meta() -> None:
+    client = FakeClient(
+        CallToolResult(content=[], structured_content={"employee_id": "E1002"}, is_error=False)
+    )
+
+    result = await call_tool(
+        client,
+        "get_employee_info",
+        {"employee_id": "E1002"},
+        request_id="REQ-0501",
+        traceparent=TRACEPARENT,
+    )
+
+    assert result == {"employee_id": "E1002"}
+    # request_id and the W3C traceparent ride in _meta, so the server can join them to its
+    # logs later (PLAN §5). The server reading them is not part of M5.
+    assert client.calls == [
+        {
+            "name": "get_employee_info",
+            "arguments": {"employee_id": "E1002"},
+            "meta": {"request_id": "REQ-0501", "traceparent": TRACEPARENT},
+        }
+    ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "result",
+    [
+        # The tool itself failed (an exception in the server, not an error dict).
+        CallToolResult(
+            content=[TextContent(type="text", text="boom")], structured_content=None, is_error=True
+        ),
+        # is_error set even though content came back: still a failure.
+        CallToolResult(content=[], structured_content={"x": 1}, is_error=True),
+        # No structured content: nothing reliable to reason about.
+        CallToolResult(content=[TextContent(type="text", text="text only")], is_error=False),
+    ],
+)
+async def test_failed_tool_call_is_returned_as_data(result: CallToolResult) -> None:
+    client = FakeClient(result)
+
+    out = await call_tool(
+        client, "get_employee_info", {}, request_id="REQ-0501", traceparent=TRACEPARENT
+    )
+
+    # Errors as data (CLAUDE.md rule 6): the agent sees TOOL_CALL_FAILED and can escalate
+    # (E11) instead of crashing.
+    assert out == {"error": "TOOL_CALL_FAILED", "tool": "get_employee_info"}
+
+
+@pytest.mark.anyio
+async def test_tool_error_dict_passes_through_unchanged() -> None:
+    # A tool's own error (e.g. EMPLOYEE_NOT_FOUND) is a normal answer, not a failed call.
+    client = FakeClient(
+        CallToolResult(
+            content=[],
+            structured_content={"error": "EMPLOYEE_NOT_FOUND", "employee_id": "E9999"},
+            is_error=False,
+        )
+    )
+
+    out = await call_tool(
+        client, "get_employee_info", {"employee_id": "E9999"}, request_id="R", traceparent="t"
+    )
+
+    assert out == {"error": "EMPLOYEE_NOT_FOUND", "employee_id": "E9999"}

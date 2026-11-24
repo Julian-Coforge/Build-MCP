@@ -379,6 +379,7 @@ Each entry: the decision, and why.
 | 2026-11-23 | M3 | `eligibility.py`: `add_months`, `check_request_eligibility` | REQUIREMENTS §4.3 as a pure function, before any MCP wrapping |
 | 2026-11-23 | M3 | Failing integration tests for the `check_request_eligibility` tool (`test_server_eligibility_tool.py`); tool-list test expects three tools | TDD red step |
 | 2026-11-23 | M3 | `check_request_eligibility` MCP tool; `status_of` option on `_call_and_log`; client demo eligibility section | Third tool exposed over MCP and proven end to end over HTTP |
+| 2026-11-24 | M4 | Failing tests for `flag_for_human_review` and `parse_reason` (`test_reviews.py`) | TDD red step |
 
 ## 7. Known issues and fixes
 

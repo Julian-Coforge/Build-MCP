@@ -281,7 +281,7 @@ Build-MCP/
 ├── tests/
 │   ├── conftest.py         # FakeMessages: a fake Anthropic messages API (real SDK types)
 │   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report, test_guards, test_tools, test_prompts
-│   └── integration/        # conftest (server, server_log), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools, test_agent_single_call
+│   └── integration/        # conftest (server, server_log), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools, test_agent_single_call, test_agent_loop (M6, red)
 ├── scripts/
 │   ├── client_demo.py      # calls the running server over HTTP
 │   └── agent_once.py       # one live, paid agent run (brief step 5a)

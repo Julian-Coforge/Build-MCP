@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-24, milestone M5 (cost maths, the budget gate, tracing, the LLM wrapper and the agent's single tool call; first live call made and verified). M1 to M5 are verified.
+**Last updated:** 2026-11-24, milestone M6 in progress (failing tests for the constraint guards, `test_guards.py`; `agent/guards.py` not written yet). M1 to M5 are verified.
 
 ---
 
@@ -255,7 +255,7 @@ Build-MCP/
 │   └── policy.json         # role entitlements (REQUIREMENTS §4.1)
 ├── tests/
 │   ├── conftest.py         # FakeMessages: a fake Anthropic messages API (real SDK types)
-│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report
+│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report, test_guards (M6, red)
 │   └── integration/        # conftest (server, server_log), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools, test_agent_single_call
 ├── scripts/
 │   ├── client_demo.py      # calls the running server over HTTP
@@ -615,6 +615,7 @@ Each entry: the decision, and why.
 | 2026-11-24 | M5 | `agent/llm.py` (`LLMClient`, `CreateMessage`) and `agent/prompts.py` (`PROMPT_VERSION`, `SYSTEM_PROMPT_SINGLE_CALL`) | One wrapper for every paid model call, so cost tracking and tracing can't be bypassed |
 | 2026-11-24 | M5 | Failing tests for the MCP bridge, the cost report and the agent's single tool call (`test_mcp_bridge.py`, `test_cost_report.py`, `test_agent_single_call.py`); `anyio_backend` fixture moved to `tests/conftest.py` | TDD red step |
 | 2026-11-24 | M5 | `agent/mcp_bridge.py`, `agent/single_call.py`, `cost_report.py`, `read_ledger` and `usage_numbers` refactors, `scripts/agent_once.py`, `.env.example`, `python-dotenv` pin, `make agent-once` and `make cost-report` | Brief step 5a: the agent makes one tool call through MCP; the live run is ready for Julian |
+| 2026-11-24 | M6 | Failing tests for the constraint guards (`test_guards.py`, 43 test functions): C1, C2, C3, C6, C7 and the decision table's required calls, with observations built from the real tool functions | TDD red step |
 
 ## 7. Known issues and fixes
 

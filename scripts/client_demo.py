@@ -26,6 +26,16 @@ ELIGIBILITY_REQUESTS = [
     ("E1001", "standing_desk"),
 ]
 
+# A new ticket, the identical call again (idempotent: same review_id, duplicate true) and a
+# reason without an escalation code (rejected, nothing written). Run `make reset-reviews`
+# first so the first ticket is REV-0001.
+STOLEN_PHONE = {
+    "employee_id": "E1003",
+    "request": "My work phone was stolen from my car last night, I need a replacement.",
+    "reason": "E6: Employee reports company phone stolen.",
+}
+REVIEW_REQUESTS = [STOLEN_PHONE, STOLEN_PHONE, {**STOLEN_PHONE, "reason": "phone stolen"}]
+
 
 def heading(text: str) -> None:
     print(f"\n{'=' * 60}\n{text}\n{'=' * 60}")
@@ -53,6 +63,14 @@ async def main() -> None:
             result = await client.call_tool(
                 "check_request_eligibility", {"employee_id": employee_id, "item": item}
             )
+            print(json.dumps(result.structured_content, indent=2))
+
+        for args in REVIEW_REQUESTS:
+            heading(
+                f"flag_for_human_review(employee_id={args['employee_id']!r}, "
+                f"reason={args['reason']!r})"
+            )
+            result = await client.call_tool("flag_for_human_review", args)
             print(json.dumps(result.structured_content, indent=2))
 
 

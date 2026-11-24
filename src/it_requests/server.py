@@ -7,13 +7,13 @@ event, so the protocol layer can't drift from the rules the unit tests pin down.
 import logging
 import time
 from collections.abc import Callable
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
 from mcp.server import MCPServer
 
-from it_requests import config, eligibility, employees, policy
+from it_requests import config, eligibility, employees, policy, reviews
 from it_requests.data import EmployeeDirectory, PolicyTable, load_employees, load_policy
 from it_requests.observability import configure_logging, log_event
 
@@ -82,16 +82,34 @@ def _eligibility_fields(result: ToolResult) -> dict[str, Any]:
     return _resolved_employee(result) | {"rule_id": result.get("rule_id")}
 
 
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _review_fields(result: ToolResult) -> dict[str, Any]:
+    # Ticket identity only; all null on an error. The request and the reason's free text
+    # are deliberately left out (see the tool below).
+    return {
+        "reason_code": result.get("reason_code"),
+        "review_id": result.get("review_id"),
+        "duplicate": result.get("duplicate"),
+    }
+
+
 def build_server(
     directory: EmployeeDirectory,
     policy_table: PolicyTable,
     *,
     as_of: date = config.REFERENCE_DATE,
+    review_queue_path: Path = config.REVIEW_QUEUE_FILE,
+    clock: Callable[[], datetime] = _utc_now,
 ) -> MCPServer:
     """Build the server around injected data.
 
     A factory, not a module-level server: tests pass in their own data, and importing this
-    module never reads files or opens ports.
+    module never reads files or opens ports. Tests also pass a temporary queue path and a
+    fixed clock, so they never touch data/review_queue.json and tickets are deterministic.
+    `clock` is a function, not a fixed time, because one server stamps many tickets.
     """
     server = MCPServer("it-requests")
 
@@ -139,6 +157,23 @@ def build_server(
             status_of=_verdict_or_error,
         )
 
+    @server.tool()
+    def flag_for_human_review(employee_id: str, request: str, reason: str) -> dict[str, Any]:
+        """Escalate a request to a human reviewer. Use this when any escalation trigger applies or the decision is not clear-cut. Do not use it for requests that are clearly approved or denied."""  # noqa: E501
+        # One line on purpose, as above: must equal REQUIREMENTS §7.4 exactly.
+        return _call_and_log(
+            "flag_for_human_review",
+            lambda: reviews.flag_for_human_review(
+                employee_id, request, reason, queue_path=review_queue_path, now=clock()
+            ),
+            data_version=directory.data_version,
+            # Never log `request` (or the reason's explanation): it is free text that can hold
+            # names, medical details (E9) or other personal data, and logs are kept longer and
+            # read more widely than the queue. PLAN §5: raw request text is not logged at INFO.
+            inputs={"employee_id": employee_id},
+            result_fields=_review_fields,
+        )
+
     return server
 
 
@@ -154,6 +189,9 @@ def main() -> None:  # pragma: no cover
         data_version=directory.data_version,
         policy_version=policy_table.data_version,
         employee_count=len(directory.employees),
+        # The path only, never its contents. Relative to the repo root, so logs and
+        # screenshots don't expose the local home folder (and with it the OS username).
+        review_queue=str(config.REVIEW_QUEUE_FILE.relative_to(config.DATA_DIR.parent)),
         host=HOST,
         port=PORT,
     )

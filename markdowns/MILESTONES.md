@@ -3,7 +3,7 @@
 > Where the project is right now. Updated as each item is finished.
 > Details for each milestone are in `PLAN.md` §13; what the code does is in `codebase.md`.
 
-**Current stage:** M5 verified (live Haiku run cost $0.000143). Push and merge M5, then **M6** (the full ReAct loop).
+**Current stage:** M5 verified. Merge M5, then **M6**, prompt pack in `markdowns/prompts/M6.md`.
 **Due:** 2026-11-26 · **LLM spend so far:** $0.00 of the $5 budget (code gate at $4.00)
 
 Legend: `[x]` done · `[ ]` not done · 📸 = screenshot for the submission PDF (number = deliverable order)

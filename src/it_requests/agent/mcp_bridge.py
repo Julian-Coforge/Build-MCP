@@ -1,8 +1,25 @@
 """The bridge between the MCP server and Claude: tool definitions in, tool calls out."""
 
+import json
 from typing import Any, Protocol
 
 from mcp.types import CallToolResult, ListToolsResult
+
+# Free-text tool arguments that can hold names or other personal details. Kept out of spans
+# for the same reason the server never logs them (PLAN §5): flag_for_human_review's
+# `request` is the employee's own words.
+FREE_TEXT_ARGUMENTS = frozenset({"request", "reason"})
+
+
+def traceparent(trace_id: int, span_id: int) -> str:
+    """W3C trace context: version-trace_id-parent_span_id-flags (01 = sampled)."""
+    return f"00-{trace_id:032x}-{span_id:016x}-01"
+
+
+def span_safe_arguments(arguments: dict[str, Any]) -> str:
+    """Arguments as a JSON string (span attributes must be flat), free text redacted."""
+    safe = {k: "[REDACTED]" if k in FREE_TEXT_ARGUMENTS else v for k, v in arguments.items()}
+    return json.dumps(safe, sort_keys=True)
 
 
 class MCPToolClient(Protocol):

@@ -4,7 +4,6 @@ Claude sees the server's tools and a hardcoded request, picks one tool call, and
 runs it on the server. No second model call: answering in prose and the ReAct loop are M6.
 """
 
-import json
 import logging
 import uuid
 from typing import Any
@@ -12,25 +11,15 @@ from typing import Any
 from opentelemetry.trace import Tracer
 
 from it_requests.agent.llm import LLMClient, usage_numbers
-from it_requests.agent.mcp_bridge import MCPToolClient, call_tool, to_claude_tools
+from it_requests.agent.mcp_bridge import (
+    MCPToolClient,
+    call_tool,
+    span_safe_arguments,
+    to_claude_tools,
+    traceparent,
+)
 from it_requests.agent.prompts import PROMPT_VERSION, SYSTEM_PROMPT_SINGLE_CALL
 from it_requests.observability import log_event, request_id_var
-
-# Free-text tool arguments that can hold names or other personal details. Kept out of spans
-# for the same reason the server never logs them (PLAN §5): flag_for_human_review's
-# `request` is the employee's own words.
-_FREE_TEXT_ARGUMENTS = frozenset({"request", "reason"})
-
-
-def _traceparent(trace_id: int, span_id: int) -> str:
-    # W3C trace context: version-trace_id-parent_span_id-flags (01 = sampled).
-    return f"00-{trace_id:032x}-{span_id:016x}-01"
-
-
-def _span_safe(arguments: dict[str, Any]) -> str:
-    """Arguments as a JSON string (span attributes must be flat), free text redacted."""
-    safe = {k: "[REDACTED]" if k in _FREE_TEXT_ARGUMENTS else v for k, v in arguments.items()}
-    return json.dumps(safe, sort_keys=True)
 
 
 async def run_single_tool_call(
@@ -91,14 +80,16 @@ async def run_single_tool_call(
                 tool_name, arguments = tool_use.name, dict(tool_use.input)
                 with tracer.start_as_current_span(f"tool.{tool_name}") as span:
                     context = span.get_span_context()
-                    span.set_attributes({"tool": tool_name, "arguments": _span_safe(arguments)})
+                    span.set_attributes(
+                        {"tool": tool_name, "arguments": span_safe_arguments(arguments)}
+                    )
                     result = await call_tool(
                         mcp_client,
                         tool_name,
                         arguments,
                         request_id=request_id,
                         # The tool span's own ID, so a server span joins under this call.
-                        traceparent=_traceparent(context.trace_id, context.span_id),
+                        traceparent=traceparent(context.trace_id, context.span_id),
                     )
                     result_status = str(result.get("error", "ok"))
                     span.set_attribute("result_status", result_status)

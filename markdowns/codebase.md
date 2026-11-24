@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-24, milestone M6 in progress (constraint guards done; failing tests for the ReAct tool definitions, the ReAct system prompt and cached system blocks). M1 to M5 are verified.
+**Last updated:** 2026-11-24, milestone M6 in progress (constraint guards, ReAct tool definitions, the ReAct system prompt and cached system blocks done; the loop itself is next). M1 to M5 are verified.
 
 ---
 
@@ -30,8 +30,9 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 | `src/it_requests/eligibility.py` | `add_months` and `check_request_eligibility`: the REQUIREMENTS §4.3 algorithm, the only source of truth for eligibility. | Tested, 100% coverage |
 | `src/it_requests/reviews.py` | `ESCALATION_CODES`, `parse_reason` and `flag_for_human_review`: the only side-effecting tool, which appends review tickets to a JSON queue file (REQUIREMENTS §2.3, §7.4). | Tested, 94% coverage (write-failure path untested); used by `server.py` |
 | `src/it_requests/agent/costs.py` | `cost_usd`, `ledger_total`, `check_budget` and `budget_from_env`, with `UnknownModelError`, `LedgerCorruptError` and `BudgetExceededError`: pure cost maths and the budget gate (PLAN §4). | Tested, 100% coverage; not yet called by any component |
-| `src/it_requests/agent/llm.py` | `LLMClient` (the one wrapper for paid model calls) and the `CreateMessage` protocol. Each call writes a cost-ledger line, an `llm.call` span and an `llm.call` log line. | Tested with a fake, 100% coverage; not yet called by any component |
-| `src/it_requests/agent/prompts.py` | `PROMPT_VERSION` (`m5-v1`) and `SYSTEM_PROMPT_SINGLE_CALL`. | Covered by the `LLMClient` tests |
+| `src/it_requests/agent/llm.py` | `LLMClient` (the one wrapper for paid model calls) and the `CreateMessage` protocol. Each call writes a cost-ledger line, an `llm.call` span and an `llm.call` log line. | Tested with a fake, 100% coverage; used by `single_call.py` |
+| `src/it_requests/agent/tools.py` | `with_thought`, `FINAL_ANSWER_TOOL`, `strip_thought`, `parse_final_answer`: the ReAct tool definitions. | Unit-tested on the real server schemas, 100% coverage |
+| `src/it_requests/agent/prompts.py` | `PROMPT_VERSION` (`m6-v1`), `SYSTEM_PROMPT_SINGLE_CALL` (M5) and `SYSTEM_PROMPT_REACT` (rules copied from REQUIREMENTS §5, §6, §6.1, §10, plus the working method). | `test_prompts.py` checks every code, constraint and key tool name, and no per-request content |
 | `src/it_requests/agent/mcp_bridge.py` | `MCPToolClient` protocol, `to_claude_tools` (MCP tool list to Claude tool definitions) and `call_tool` (one tool call with `request_id` and `traceparent` in `_meta`). | Tested, 100% coverage |
 | `src/it_requests/agent/single_call.py` | `run_single_tool_call`: one model call, then the one tool call Claude picks, run on the server, inside an `agent.run` trace. | Integration-tested with the fake and the in-process server, 100% coverage |
 | `src/it_requests/agent/guards.py` | `check_tool_call` (C6, C7 before a call), `check_final_answer` (C1, C2, C3, required calls, C7 on the answer) and `violation_message`. Pure. | Unit-tested against results from the real tool functions, 100% coverage |
@@ -163,6 +164,15 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
   - **Ledger:** appends one line to the cost ledger with `ts`, `request_id`, `run_id`, `stage`, `model`, `prompt_version`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `cost_usd`, `latency_ms`, `env` and `stop_reason`. `null` cache counts are recorded as 0.
   - **Log:** logs `llm.call` at INFO with the same numbers. It never logs messages, the system prompt, tools or the request text.
   - **Failure:** if `create` raises, the span is marked `ERROR`, no ledger line is written, and the exception propagates. There is no retry, because the SDK already retries.
+  - **`system`** may be a string or a list of text blocks; either is passed through unchanged.
+- **`system_blocks(text)`:** one text block with `cache_control: {"type": "ephemeral"}`. The cache prefix runs tools, then system, then messages, so this one breakpoint caches the tools and the system prompt for every loop step after the first.
+
+### `agent/tools.py` in detail
+
+- **`with_thought(claude_tools)`:** deep-copies each tool, puts a required string `thought` first in `properties` and `required`, sets `additionalProperties: false` in the schema and `strict: true` on the tool. `strict` is a tool-level field in the Messages API, not a schema key.
+- **`FINAL_ANSWER_TOOL`:** `final_answer`, strict. Properties `thought`, `decision` (enum approve/deny/escalate), `rule_id` and `review_id` (string or null), `reason_code` (E1 to E11 from `reviews.ESCALATION_CODES`, or null) and `draft_reply`. All are required; null means "not applicable".
+- **`strip_thought(tool_input)`:** returns `(thought, arguments)` without mutating the input. A missing `thought` becomes `""`.
+- **`parse_final_answer(tool_input)`:** returns a `FinalAnswer`, or raises `ValueError` on a bad `decision` or a non-string field. It checks types only; `check_final_answer` decides whether the answer is allowed.
 
 ### `agent/mcp_bridge.py` and `agent/single_call.py` in detail
 
@@ -257,6 +267,7 @@ Build-MCP/
 │   │   ├── llm.py          # LLMClient: every model call, with ledger, span and log
 │   │   ├── prompts.py      # PROMPT_VERSION and system prompts
 │   │   ├── guards.py       # C1-C3, C6, C7 and required-call checks (pure)
+│   │   ├── tools.py        # thought on every tool, final_answer, parse helpers
 │   │   ├── mcp_bridge.py   # MCP tools to Claude tool definitions; call one tool
 │   │   └── single_call.py  # run_single_tool_call (brief step 5a)
 │   ├── cost_report.py      # python -m it_requests.cost_report
@@ -269,7 +280,7 @@ Build-MCP/
 │   └── policy.json         # role entitlements (REQUIREMENTS §4.1)
 ├── tests/
 │   ├── conftest.py         # FakeMessages: a fake Anthropic messages API (real SDK types)
-│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report, test_guards, test_tools and test_prompts (M6, red)
+│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report, test_guards, test_tools, test_prompts
 │   └── integration/        # conftest (server, server_log), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools, test_agent_single_call
 ├── scripts/
 │   ├── client_demo.py      # calls the running server over HTTP
@@ -596,6 +607,15 @@ Each entry: the decision, and why.
 86. **`check_final_answer` returns all violations in a fixed order.**
     *Why:* the model can fix every problem in one retry, and tests compare exact lists.
 
+87. **`strict: true` replaces forced `tool_choice`, and `thought` is the first property.**
+    *Why:* Sonnet 5.5 rejects forced tool choice, and strict mode still guarantees schema-valid arguments. The model writes properties in order, so it states its reason before filling in the arguments.
+
+88. **The system prompt copies the written rules and holds no per-request content.**
+    *Why:* the model applies REQUIREMENTS word for word instead of inventing rules. Identical text on every run is what makes it cacheable, and `system_blocks` caches it with the tools.
+
+89. **`parse_final_answer` raises `ValueError` instead of returning an error dict.**
+    *Why:* it is called by the loop, not exposed as a tool, so CLAUDE.md rule 6 doesn't apply. A refusal or a `max_tokens` cut-off can break the schema even in strict mode; the loop catches the error and tells the model.
+
 ## 6. Change log
 
 | Date | Milestone | Change | Why |
@@ -641,6 +661,7 @@ Each entry: the decision, and why.
 | 2026-11-24 | M6 | Failing tests for the constraint guards (`test_guards.py`, 43 test functions): C1, C2, C3, C6, C7 and the decision table's required calls, with observations built from the real tool functions | TDD red step |
 | 2026-11-24 | M6 | `agent/guards.py`: `Observation`, `FinalAnswer`, `check_tool_call`, `check_final_answer`, `violation_message` | C1, C2, C3, C6 and C7 enforced in code before the ReAct loop uses them |
 | 2026-11-24 | M6 | Failing tests for the ReAct tools (`test_tools.py`), the ReAct system prompt (`test_prompts.py`) and `system_blocks` (`test_llm.py`); the `prompt_version` assertion moves to `m6-v1` | TDD red step |
+| 2026-11-24 | M6 | `agent/tools.py`, `SYSTEM_PROMPT_REACT` and `PROMPT_VERSION` `m6-v1` in `agent/prompts.py`, `system_blocks` and block-list `system` in `agent/llm.py` | Every Action carries a Thought, the decision comes back as data, and the fixed prompt prefix is cached |
 
 ## 7. Known issues and fixes
 

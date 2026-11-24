@@ -6,7 +6,7 @@ Cost tracking and tracing live here, so they can't be bypassed: each call opens 
 
 import json
 import logging
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -55,6 +55,17 @@ def usage_numbers(model: str, usage: Usage) -> dict[str, Any]:
     return numbers
 
 
+def system_blocks(text: str) -> list[dict[str, Any]]:
+    """The system prompt as one text block with an ephemeral cache breakpoint.
+
+    The system prompt and tools are resent on every step of the loop. The cache prefix is
+    built in the order tools, system, messages, so this one breakpoint caches both: steps 2
+    onwards read them at the cache-read price. The ledger already records cache read and
+    write tokens, so the saving shows there.
+    """
+    return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
+
+
 class LLMClient:
     """Send one model request, and record its tokens, cost, latency and span."""
 
@@ -89,7 +100,8 @@ class LLMClient:
         request_id: str,
         run_id: str,
         stage: str,
-        system: str,
+        # A plain string (M5), or text blocks with cache_control (system_blocks), passed as is.
+        system: str | Sequence[Mapping[str, Any]],
         messages: Iterable[Mapping[str, Any]],
         tools: Iterable[Mapping[str, Any]],
     ) -> Message:

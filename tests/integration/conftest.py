@@ -14,14 +14,6 @@ from it_requests.data import load_employees, load_policy
 from it_requests.observability import JsonFormatter
 from it_requests.server import build_server
 
-
-@pytest.fixture
-def anyio_backend() -> str:
-    # The anyio pytest plugin (installed with mcp) runs async tests. Pin asyncio, because
-    # the server and client are only used on asyncio, and trio isn't installed.
-    return "asyncio"
-
-
 # Fixed time for created_at, so tickets written in tests are deterministic.
 FIXED_NOW = datetime(2026, 11, 22, 9, 0, tzinfo=UTC)
 

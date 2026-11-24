@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from opentelemetry.sdk.trace import TracerProvider
 
 from it_requests.observability import (
     JsonFormatter,
@@ -141,6 +142,38 @@ def test_exception_adds_type_and_message(captured: tuple[logging.Logger, io.Stri
     assert record["level"] == "ERROR"
     assert record["exc_type"] == "ValueError"
     assert record["exc_message"] == "bad data"
+
+
+# --- Trace correlation (PLAN §5, §6) ------------------------------------------------------
+
+
+def test_log_line_inside_span_carries_its_ids(
+    captured: tuple[logging.Logger, io.StringIO],
+) -> None:
+    logger, stream = captured
+    # A local SDK provider, never the global one, so this test can't affect any other.
+    tracer = TracerProvider().get_tracer("test")
+
+    with tracer.start_as_current_span("agent.run") as span:
+        log_event(logger, "run.start")
+        context = span.get_span_context()
+
+    record = _only_record(stream)
+    # Same hex format as the trace files, so a log line and its span can be matched.
+    assert record["trace_id"] == format(context.trace_id, "032x")
+    assert record["span_id"] == format(context.span_id, "016x")
+
+
+def test_log_line_outside_span_has_null_ids(
+    captured: tuple[logging.Logger, io.StringIO],
+) -> None:
+    logger, stream = captured
+
+    log_event(logger, "x")
+
+    record = _only_record(stream)
+    assert record["trace_id"] is None
+    assert record["span_id"] is None
 
 
 # --- configure_logging -------------------------------------------------------------

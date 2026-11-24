@@ -13,6 +13,17 @@ dependencies = [
     # Imported directly by it_requests.data for the data models. Declared explicitly so we
     # don't rely on it arriving only as a dependency of mcp.
     "pydantic>=2.14,<3",
+    # Writes trace spans to traces/<request_id>.jsonl (PLAN §6). Pinned to exactly the
+    # installed opentelemetry-api version (which mcp pulls in): the SDK and the API are
+    # released together, and a mismatched pair can fail at import or drop spans.
+    "opentelemetry-sdk==1.45.2",
+    # Claude API client for the agent (agent/llm.py). Pinned exactly: the response types
+    # (Message, Usage) are read field by field for the cost ledger, and the test fakes build
+    # the SDK's own types, so an unannounced field change must not slip in with an upgrade.
+    "anthropic==2.13.0",
+    # Loads ANTHROPIC_API_KEY and BUDGET_USD from .env in scripts/agent_once.py, so the key
+    # lives in one gitignored file and never in code or shell history.
+    "python-dotenv==1.2.4",
 ]
 
 [project.scripts]

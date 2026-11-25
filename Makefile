@@ -1,6 +1,6 @@
 # Run from an activated virtualenv (source .venv/bin/activate).
 # `make check` runs the same steps as CI, in the same fast-to-slow order.
-.PHONY: install format lint type test audit check serve client-demo reset-reviews agent-once cost-report agent eval
+.PHONY: install format lint type test test-live audit check serve client-demo reset-reviews agent-once cost-report agent eval
 
 install:
 	python -m pip install -e ".[dev]"
@@ -15,8 +15,14 @@ lint:
 type:
 	mypy
 
+# Fast tests only: fakes, no network, no paid calls. The same selection CI runs.
 test:
-	pytest --cov
+	pytest -m "not slow" --cov
+
+# PAID (about $0.004): one real T1 run on Haiku against the live server. Run `make serve`
+# in another terminal first. Skips, with the reason shown, if the key or server is missing.
+test-live:
+	pytest -m "slow" -rs tests/live
 
 audit:
 	pip-audit --skip-editable

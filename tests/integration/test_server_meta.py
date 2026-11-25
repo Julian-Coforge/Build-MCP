@@ -59,7 +59,7 @@ def _tool_calls(log: io.StringIO) -> list[dict[str, Any]]:
 
 
 @pytest.mark.parametrize(("tool", "arguments"), CALLS, ids=[c[0] for c in CALLS])
-async def test_meta_request_id_is_logged(
+async def test_server_meta_request_id_is_logged(
     server: MCPServer, server_log: io.StringIO, tool: str, arguments: dict[str, Any]
 ) -> None:
     async with Client(server) as client:
@@ -70,7 +70,7 @@ async def test_meta_request_id_is_logged(
 
 
 @pytest.mark.parametrize(("tool", "arguments"), CALLS, ids=[c[0] for c in CALLS])
-async def test_no_meta_logs_null(
+async def test_server_no_meta_logs_null_request_id(
     server: MCPServer, server_log: io.StringIO, tool: str, arguments: dict[str, Any]
 ) -> None:
     async with Client(server) as client:
@@ -80,7 +80,7 @@ async def test_no_meta_logs_null(
     assert record["request_id"] is None
 
 
-async def test_request_id_does_not_leak_into_the_next_call(
+async def test_server_request_id_does_not_leak_into_the_next_call(
     server: MCPServer, server_log: io.StringIO
 ) -> None:
     # Set only for the length of one call: a later call without meta must not inherit it.
@@ -91,10 +91,20 @@ async def test_request_id_does_not_leak_into_the_next_call(
         await client.call_tool("get_employee_info", {"employee_id": "E1002"})
 
     assert [r["request_id"] for r in _tool_calls(server_log)] == ["REQ-0042", None]
+
+
+async def test_request_id_var_is_reset_after_the_call(server: MCPServer) -> None:
+    async with Client(server) as client:
+        await client.call_tool(
+            "get_employee_info", {"employee_id": "E1002"}, meta={"request_id": "REQ-0042"}
+        )
+
     assert request_id_var.get() is None
 
 
-async def test_non_string_request_id_is_ignored(server: MCPServer, server_log: io.StringIO) -> None:
+async def test_server_non_string_request_id_is_ignored(
+    server: MCPServer, server_log: io.StringIO
+) -> None:
     # _meta comes from the client: only a string is trusted as a correlation ID.
     async with Client(server) as client:
         await client.call_tool(
@@ -105,11 +115,23 @@ async def test_non_string_request_id_is_ignored(server: MCPServer, server_log: i
     assert record["request_id"] is None
 
 
-async def test_tool_signatures_and_descriptions_are_unchanged(server: MCPServer) -> None:
+async def _listed(server: MCPServer) -> list[Any]:
     async with Client(server) as client:
-        listed = (await client.list_tools()).tools
+        return list((await client.list_tools()).tools)
+
+
+async def test_tool_signatures_and_descriptions_are_unchanged(server: MCPServer) -> None:
+    listed = await _listed(server)
 
     seen = {tool.name: (list(tool.input_schema["properties"]), tool.description) for tool in listed}
+
     assert seen == EXPECTED_TOOLS
-    for tool in listed:
-        assert tool.input_schema["required"] == EXPECTED_TOOLS[tool.name][0]
+
+
+async def test_tool_required_arguments_are_unchanged(server: MCPServer) -> None:
+    # Every argument stays required: nothing about _meta leaks into the model's schema.
+    listed = await _listed(server)
+
+    required = {tool.name: tool.input_schema["required"] for tool in listed}
+
+    assert required == {name: arguments for name, (arguments, _) in EXPECTED_TOOLS.items()}

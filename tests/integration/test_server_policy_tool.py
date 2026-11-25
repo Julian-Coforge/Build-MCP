@@ -1,13 +1,16 @@
 """get_policy_limits called through the MCP protocol, in-process (no network)."""
 
-import io
-import json
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import pytest
-from mcp import Client
-from mcp.server import MCPServer
+from mcp.types import CallToolResult, Tool
 
 pytestmark = pytest.mark.anyio
+
+CallTool = Callable[..., Awaitable[CallToolResult]]
+ListTools = Callable[[], Awaitable[dict[str, Tool]]]
+Records = Callable[[], list[dict[str, Any]]]
 
 # REQUIREMENTS §7.2 "Description for the model", word for word: the model chooses tools
 # from this text, so any drift changes agent behaviour.
@@ -17,63 +20,81 @@ EXPECTED_DESCRIPTION = (
 )
 
 
-async def test_description_matches_requirements(server: MCPServer) -> None:
-    async with Client(server) as client:
-        result = await client.list_tools()
+async def test_policy_tool_description_matches_requirements(listed_tools: ListTools) -> None:
+    tools = await listed_tools()
 
-    tool = next(t for t in result.tools if t.name == "get_policy_limits")
-    assert tool.description == EXPECTED_DESCRIPTION
+    assert tools["get_policy_limits"].description == EXPECTED_DESCRIPTION
 
 
-async def test_engineer_limits(server: MCPServer) -> None:
-    async with Client(server) as client:
-        result = await client.call_tool("get_policy_limits", {"role": "engineer"})
+async def test_policy_tool_engineer_call_is_not_an_error(call_tool: CallTool) -> None:
+    result = await call_tool("get_policy_limits", {"role": "engineer"})
 
     assert result.is_error is False
-    assert result.structured_content is not None
+
+
+async def test_policy_tool_engineer_gets_two_monitors(call_tool: CallTool) -> None:
+    result = await call_tool("get_policy_limits", {"role": "engineer"})
+
     assert result.structured_content["limits"]["monitor"] == {"max": 2, "refresh_months": 36}
+
+
+async def test_policy_tool_result_names_the_data_version(call_tool: CallTool) -> None:
+    result = await call_tool("get_policy_limits", {"role": "engineer"})
+
     assert result.structured_content["data_version"] == "policy-v1"
 
 
-async def test_mixed_case_role_works_through_protocol(server: MCPServer) -> None:
-    async with Client(server) as client:
-        result = await client.call_tool("get_policy_limits", {"role": "Manager"})
+async def test_policy_tool_mixed_case_role_returns_normalised_role(call_tool: CallTool) -> None:
+    result = await call_tool("get_policy_limits", {"role": "Manager"})
 
-    assert result.structured_content is not None
     assert result.structured_content["role"] == "manager"
 
 
-async def test_unknown_role_is_data_not_protocol_error(server: MCPServer) -> None:
-    async with Client(server) as client:
-        result = await client.call_tool("get_policy_limits", {"role": "intern"})
+async def test_policy_tool_unknown_role_is_data_not_protocol_error(call_tool: CallTool) -> None:
+    result = await call_tool("get_policy_limits", {"role": "intern"})
 
     # is_error stays False: an unknown role is an answer the model reasons about,
     # not a failure of the tool (REQUIREMENTS §7).
-    assert result.is_error is False
-    assert result.structured_content == {"error": "UNKNOWN_ROLE", "role": "intern"}
+    assert (result.is_error, result.structured_content) == (
+        False,
+        {"error": "UNKNOWN_ROLE", "role": "intern"},
+    )
 
 
-async def test_none_and_null_survive_the_protocol(server: MCPServer) -> None:
-    async with Client(server) as client:
-        result = await client.call_tool("get_policy_limits", {"role": "standard"})
+# The two "no refresh" meanings must arrive distinct after JSON round-tripping:
+# "none" = entitled, no refresh cycle (R-LIMIT); null = not entitled (R-ROLE).
+@pytest.mark.parametrize(
+    ("item", "refresh"),
+    [("docking_station", "none"), ("mobile_phone", None)],
+    ids=["none-string-survives", "null-survives"],
+)
+async def test_policy_tool_refresh_none_and_null_survive_the_protocol(
+    call_tool: CallTool, item: str, refresh: str | None
+) -> None:
+    result = await call_tool("get_policy_limits", {"role": "standard"})
 
-    assert result.structured_content is not None
-    limits = result.structured_content["limits"]
-    # The two "no refresh" meanings must arrive distinct after JSON round-tripping:
-    # "none" = entitled, no refresh cycle (R-LIMIT); null = not entitled (R-ROLE).
-    assert limits["docking_station"]["refresh_months"] == "none"
-    assert limits["mobile_phone"]["refresh_months"] is None
+    assert result.structured_content["limits"][item]["refresh_months"] == refresh
 
 
-async def test_tool_call_logs_one_event(server: MCPServer, server_log: io.StringIO) -> None:
-    async with Client(server) as client:
-        await client.call_tool("get_policy_limits", {"role": "engineer"})
+async def test_policy_tool_call_logs_one_event(
+    call_tool: CallTool, tool_call_records: Records
+) -> None:
+    await call_tool("get_policy_limits", {"role": "engineer"})
 
-    records = [json.loads(line) for line in server_log.getvalue().splitlines()]
-    tool_calls = [r for r in records if r["event"] == "tool.call"]
-    assert len(tool_calls) == 1
-    record = tool_calls[0]
-    assert record["tool"] == "get_policy_limits"
-    assert record["role"] == "engineer"
-    assert record["status"] == "ok"
-    assert record["data_version"] == "policy-v1"
+    assert len(tool_call_records()) == 1
+
+
+async def test_policy_tool_log_line_has_role_status_and_version(
+    call_tool: CallTool, tool_call_records: Records
+) -> None:
+    expected = {
+        "tool": "get_policy_limits",
+        "role": "engineer",
+        "status": "ok",
+        "data_version": "policy-v1",
+    }
+
+    await call_tool("get_policy_limits", {"role": "engineer"})
+    (record,) = tool_call_records()
+
+    assert {key: record[key] for key in expected} == expected

@@ -1,13 +1,17 @@
 """Shared fixtures for integration tests: the real server, called in-process."""
 
 import io
+import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
+from mcp import Client
 from mcp.server import MCPServer
+from mcp.types import CallToolResult, Tool
 
 from it_requests import config
 from it_requests.data import load_employees, load_policy
@@ -52,3 +56,32 @@ def server_log() -> Iterator[io.StringIO]:
     logger.propagate = False
     yield stream
     logger.handlers, logger.level, logger.propagate = old_handlers, old_level, old_propagate
+
+
+@pytest.fixture
+def call_tool(server: MCPServer) -> Callable[..., Awaitable[CallToolResult]]:
+    # One call over a fresh in-process session: the Act step of most tests in one line.
+    async def _call(tool: str, arguments: dict[str, Any], **kwargs: Any) -> CallToolResult:
+        async with Client(server) as client:
+            return await client.call_tool(tool, arguments, **kwargs)
+
+    return _call
+
+
+@pytest.fixture
+def listed_tools(server: MCPServer) -> Callable[[], Awaitable[dict[str, Tool]]]:
+    async def _list() -> dict[str, Tool]:
+        async with Client(server) as client:
+            return {tool.name: tool for tool in (await client.list_tools()).tools}
+
+    return _list
+
+
+@pytest.fixture
+def tool_call_records(server_log: io.StringIO) -> Callable[[], list[dict[str, Any]]]:
+    # The server's tool.call log lines, parsed. A function, so it reads after the Act step.
+    def _records() -> list[dict[str, Any]]:
+        records = [json.loads(line) for line in server_log.getvalue().splitlines()]
+        return [r for r in records if r["event"] == "tool.call"]
+
+    return _records

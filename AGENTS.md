@@ -49,6 +49,21 @@ markdowns/           all project docs
 6. **Tool errors are returned as data**, for example `{"error": "EMPLOYEE_NOT_FOUND", ...}`, never raised to the agent (REQUIREMENTS §7).
 7. **Stay in scope.** Do only what the prompt asks. Don't touch `examples/step1/` or the docs in `markdowns/`. The user's main Claude session keeps `codebase.md` and `MILESTONES.md` up to date.
 
+## Test standard (Arrange-Act-Assert)
+
+Every test follows the `aaa-unit-testing` standard. `tests/unit/test_test_style.py` enforces rules 1, 2 and the parametrize/logic rules on every push.
+
+1. **One behaviour, one `assert` per test.** If it needs two asserts, it is two tests. `pytest.raises`, or an `_exploding` fake that raises if called, counts as the assert.
+2. **The name is the spec:** `test_<unit>_<condition>_<expected>`, in domain words. No "and", "works" or "correct" in names.
+3. **Arrange / Act / Assert are visibly separate**, with a blank line between phases when setup is more than one line.
+4. **Fakes over mocks.** Dependencies (LLM `create`, MCP client, clock, tracer, file paths) are injected; tests pass small deterministic fakes. No `patch` of module internals.
+5. **Fast by default.** Anything real, networked or paid is marked `slow` (and `eval` if it calls the Claude API). `make check` and CI run `-m "not slow"`. Real-dependency twins are named `test_real_...`.
+6. **Known bugs are `xfail(strict=True, reason=...)`.** Never skip or delete a test to get green.
+7. **Deterministic:** no real time, randomness, network or shared state in fast tests. Use `tmp_path`, injected clocks and fresh fixtures.
+8. **Edges on purpose:** empty input, exact boundary, oversized values, invalid input, repeat calls (idempotency), input not mutated.
+9. **Shared data at module top in CAPS** (with a comment on why it gives the outcome); helpers prefixed `_`. No `if`/`for` in test bodies: use `@pytest.mark.parametrize(..., ids=...)` or a helper.
+10. **Group by unit** with `# ---------- unit ----------` comments, happy path first, slow tests last.
+
 ## Commands
 
 ```bash

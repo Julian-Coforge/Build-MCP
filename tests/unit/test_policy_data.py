@@ -11,34 +11,55 @@ import pytest
 from it_requests import config
 from it_requests.data import DataValidationError, load_policy
 
-# --- The real policy file ---------------------------------------------------------
+# ---------- the real policy file ----------
 
 
-def test_real_policy_file_loads_complete() -> None:
-    policy = load_policy(config.POLICY_FILE)
-
-    assert policy.data_version == "policy-v1"
-    assert len(policy.roles) == 4
-    assert all(len(items) == 6 for items in policy.roles.values())
+def test_load_policy_real_file_has_data_version_policy_v1() -> None:
+    assert load_policy(config.POLICY_FILE).data_version == "policy-v1"
 
 
-@pytest.mark.parametrize(
-    ("role", "item", "max_units", "refresh"),
-    [
-        ("engineer", "monitor", 2, 36),
-        ("standard", "docking_station", 1, "none"),  # entitled, no refresh cycle (R-LIMIT)
-        ("contractor", "laptop", 0, None),  # not entitled (R-ROLE)
-        ("manager", "mobile_phone", 1, 24),
-    ],
-)
-def test_limits_for_spot_checks(role: Any, item: Any, max_units: int, refresh: object) -> None:
-    limit = load_policy(config.POLICY_FILE).limits_for(role)[item]
-
-    assert limit.max == max_units
-    assert limit.refresh_months == refresh
+def test_load_policy_real_file_has_four_roles() -> None:
+    assert len(load_policy(config.POLICY_FILE).roles) == 4
 
 
-# --- Invalid policy fails loudly ----------------------------------------------------
+def test_load_policy_real_file_has_six_items_per_role() -> None:
+    roles = load_policy(config.POLICY_FILE).roles
+
+    assert {role: len(items) for role, items in roles.items()} == {
+        "standard": 6,
+        "engineer": 6,
+        "manager": 6,
+        "contractor": 6,
+    }
+
+
+SPOT_CHECKS = [
+    ("engineer", "monitor", 2, 36),
+    ("standard", "docking_station", 1, "none"),  # entitled, no refresh cycle (R-LIMIT)
+    ("contractor", "laptop", 0, None),  # not entitled (R-ROLE)
+    ("manager", "mobile_phone", 1, 24),
+]
+
+
+def _spot_id(case: tuple[str, str, int, object]) -> str:
+    return f"{case[0]}-{case[1]}"
+
+
+@pytest.mark.parametrize("case", SPOT_CHECKS, ids=_spot_id)
+def test_limits_for_returns_requirements_max(case: tuple[Any, Any, int, object]) -> None:
+    role, item, max_units, _ = case
+
+    assert load_policy(config.POLICY_FILE).limits_for(role)[item].max == max_units
+
+
+@pytest.mark.parametrize("case", SPOT_CHECKS, ids=_spot_id)
+def test_limits_for_returns_requirements_refresh_months(case: tuple[Any, Any, int, object]) -> None:
+    role, item, _, refresh = case
+
+    assert load_policy(config.POLICY_FILE).limits_for(role)[item].refresh_months == refresh
+
+
+# ---------- invalid policy fails loudly ----------
 # Each case deep-copies the real file and breaks exactly one thing, so a failure points
 # at the single rule that was not enforced.
 
@@ -108,7 +129,7 @@ def _extra_field(p: dict[str, Any]) -> None:
     ],
     ids=lambda f: f.__name__.lstrip("_"),
 )
-def test_invalid_policy_raises(
+def test_load_policy_invalid_policy_raises(
     tmp_path: Path, break_policy: Callable[[dict[str, Any]], None]
 ) -> None:
     data = _real_policy()
@@ -123,8 +144,9 @@ def test_invalid_policy_raises(
 @pytest.mark.parametrize(
     ("break_policy", "named"),
     [(_missing_role, "contractor"), (_role_missing_item, "laptop")],
+    ids=["missing-role", "missing-item"],
 )
-def test_completeness_error_names_what_is_missing(
+def test_load_policy_incomplete_policy_error_names_what_is_missing(
     tmp_path: Path, break_policy: Callable[[dict[str, Any]], None], named: str
 ) -> None:
     data = _real_policy()
@@ -136,12 +158,12 @@ def test_completeness_error_names_what_is_missing(
         load_policy(path)
 
 
-def test_missing_file_raises_with_path(tmp_path: Path) -> None:
+def test_load_policy_missing_file_raises_naming_the_path(tmp_path: Path) -> None:
     with pytest.raises(DataValidationError, match="no_policy.json"):
         load_policy(tmp_path / "no_policy.json")
 
 
-def test_invalid_json_raises(tmp_path: Path) -> None:
+def test_load_policy_invalid_json_raises(tmp_path: Path) -> None:
     path = tmp_path / "policy.json"
     path.write_text("{not json", encoding="utf-8")
 

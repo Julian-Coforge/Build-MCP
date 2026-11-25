@@ -15,30 +15,49 @@ ENTRIES: list[dict[str, Any]] = [
 ]
 
 
-def test_summarise_totals_and_groups() -> None:
-    summary = summarise(ENTRIES, budget=4.00)
+SUMMARY = summarise(ENTRIES, budget=4.00)
+EMPTY = summarise([], budget=4.00)
+UNKNOWN = summarise([{"cost_usd": 0.01}], budget=4.0)
 
-    assert summary.total == pytest.approx(0.071)
-    assert summary.by_env == pytest.approx({"dev": 0.001, "eval": 0.07})
-    assert summary.by_stage == pytest.approx(
+
+# ---------- summarise ----------
+
+
+def test_summarise_total_adds_every_entry() -> None:
+    assert SUMMARY.total == pytest.approx(0.071)
+
+
+def test_summarise_groups_cost_by_env() -> None:
+    assert SUMMARY.by_env == pytest.approx({"dev": 0.001, "eval": 0.07})
+
+
+def test_summarise_groups_cost_by_stage() -> None:
+    assert SUMMARY.by_stage == pytest.approx(
         {"single_call": 0.001, "react_step_1": 0.05, "reflection": 0.02}
     )
-    assert summary.by_request == pytest.approx({"REQ-0501": 0.001, "REQ-0001": 0.07})
-    assert summary.calls == 3
-    assert summary.budget == 4.00
-    assert summary.remaining == pytest.approx(3.929)
 
 
-def test_empty_ledger_has_full_budget_remaining() -> None:
-    summary = summarise([], budget=4.00)
-
-    assert summary.total == 0.0
-    assert summary.calls == 0
-    assert summary.by_env == {}
-    assert summary.remaining == 4.00
+def test_summarise_groups_cost_by_request() -> None:
+    assert SUMMARY.by_request == pytest.approx({"REQ-0501": 0.001, "REQ-0001": 0.07})
 
 
-def test_overspend_shows_negative_remaining() -> None:
+def test_summarise_counts_calls_and_keeps_budget() -> None:
+    assert (SUMMARY.calls, SUMMARY.budget) == (3, 4.00)
+
+
+def test_summarise_remaining_is_budget_minus_total() -> None:
+    assert SUMMARY.remaining == pytest.approx(3.929)
+
+
+def test_summarise_empty_ledger_has_zero_total_and_calls() -> None:
+    assert (EMPTY.total, EMPTY.calls, EMPTY.by_env) == (0.0, 0, {})
+
+
+def test_summarise_empty_ledger_has_full_budget_remaining() -> None:
+    assert EMPTY.remaining == 4.00
+
+
+def test_summarise_overspend_shows_negative_remaining() -> None:
     # Shown as negative, not clamped at 0: an overspend must be visible, not hidden.
     summary = summarise(
         [{"env": "eval", "stage": "s", "request_id": "R", "cost_usd": 4.5}], budget=4.0
@@ -47,43 +66,56 @@ def test_overspend_shows_negative_remaining() -> None:
     assert summary.remaining == pytest.approx(-0.5)
 
 
-def test_missing_group_keys_go_to_unknown() -> None:
-    summary = summarise([{"cost_usd": 0.01}], budget=4.0)
-
-    assert summary.by_env == pytest.approx({"unknown": 0.01})
-    assert summary.by_stage == pytest.approx({"unknown": 0.01})
-    assert summary.by_request == pytest.approx({"unknown": 0.01})
+@pytest.mark.parametrize("group", ["by_env", "by_stage", "by_request"], ids=str)
+def test_summarise_missing_group_key_goes_to_unknown(group: str) -> None:
+    assert getattr(UNKNOWN, group) == pytest.approx({"unknown": 0.01})
 
 
-def test_format_report_shows_every_section() -> None:
-    text = format_report(summarise(ENTRIES, budget=4.00))
+# ---------- format_report ----------
 
-    for heading in ("Total", "By env", "By stage", "By request", "Remaining"):
-        assert heading in text
-    # Four decimals: development runs cost fractions of a cent.
-    assert "$0.0710" in text
-    assert "$3.9290" in text
-    assert "REQ-0001" in text
+# Four decimals: development runs cost fractions of a cent.
+REPORT_TEXT = [
+    "Total",
+    "By env",
+    "By stage",
+    "By request",
+    "Remaining",
+    "$0.0710",
+    "$3.9290",
+    "REQ-0001",
+]
 
 
+@pytest.mark.parametrize("expected", REPORT_TEXT, ids=str)
+def test_format_report_shows_every_section_and_figure(expected: str) -> None:
+    assert expected in format_report(SUMMARY)
+
+
+# ---------- main ----------
+
+
+@pytest.mark.parametrize(
+    "expected",
+    ["$0.0710", "$1.9290"],  # the remaining figure uses BUDGET_USD
+    ids=["total", "remaining-from-env-budget"],
+)
 def test_main_prints_report_for_a_ledger(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], expected: str
 ) -> None:
     ledger = tmp_path / "cost_ledger.jsonl"
     ledger.write_text("\n".join(json.dumps(e) for e in ENTRIES) + "\n", encoding="utf-8")
 
     main(ledger_path=ledger, environ={"BUDGET_USD": "2.00"})
 
-    out = capsys.readouterr().out
-    assert "$0.0710" in out
-    assert "$1.9290" in out  # the budget comes from BUDGET_USD
+    assert expected in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    "expected", ["$0.0000", "$4.0000"], ids=["zero-total", "default-budget-remaining"]
+)
 def test_main_with_no_ledger_reports_zero(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], expected: str
 ) -> None:
     main(ledger_path=tmp_path / "missing.jsonl", environ={})
 
-    out = capsys.readouterr().out
-    assert "$0.0000" in out
-    assert "$4.0000" in out
+    assert expected in capsys.readouterr().out

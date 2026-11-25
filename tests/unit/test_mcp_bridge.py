@@ -5,7 +5,12 @@ from typing import Any
 import pytest
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
-from it_requests.agent.mcp_bridge import call_tool, to_claude_tools
+from it_requests.agent.mcp_bridge import (
+    call_tool,
+    span_safe_arguments,
+    to_claude_tools,
+    traceparent,
+)
 
 SCHEMA = {
     "type": "object",
@@ -14,7 +19,7 @@ SCHEMA = {
 }
 
 
-# --- to_claude_tools ----------------------------------------------------------------------
+# ---------- to_claude_tools ----------
 
 
 def test_to_claude_tools_maps_name_description_and_schema() -> None:
@@ -52,13 +57,13 @@ def test_to_claude_tools_drops_mcp_only_fields() -> None:
     assert set(to_claude_tools(listed)[0]) == {"name", "description", "input_schema"}
 
 
-def test_missing_description_becomes_empty_string() -> None:
+def test_to_claude_tools_missing_description_becomes_empty_string() -> None:
     listed = ListToolsResult(tools=[Tool(name="t", input_schema=SCHEMA)])
 
     assert to_claude_tools(listed)[0]["description"] == ""
 
 
-# --- call_tool --------------------------------------------------------------------------------
+# ---------- call_tool ----------
 
 
 class FakeClient:
@@ -78,13 +83,14 @@ class FakeClient:
 TRACEPARENT = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
 
 
-@pytest.mark.anyio
-async def test_call_tool_returns_structured_content_and_sends_meta() -> None:
-    client = FakeClient(
+def _ok_client() -> FakeClient:
+    return FakeClient(
         CallToolResult(content=[], structured_content={"employee_id": "E1002"}, is_error=False)
     )
 
-    result = await call_tool(
+
+async def _call_e1002(client: FakeClient) -> dict[str, Any]:
+    return await call_tool(
         client,
         "get_employee_info",
         {"employee_id": "E1002"},
@@ -92,9 +98,20 @@ async def test_call_tool_returns_structured_content_and_sends_meta() -> None:
         traceparent=TRACEPARENT,
     )
 
-    assert result == {"employee_id": "E1002"}
+
+@pytest.mark.anyio
+async def test_call_tool_returns_structured_content() -> None:
+    assert await _call_e1002(_ok_client()) == {"employee_id": "E1002"}
+
+
+@pytest.mark.anyio
+async def test_call_tool_sends_request_id_and_traceparent_in_meta() -> None:
     # request_id and the W3C traceparent ride in _meta, so the server can join them to its
-    # logs later (PLAN §5). The server reading them is not part of M5.
+    # logs (PLAN §5).
+    client = _ok_client()
+
+    await _call_e1002(client)
+
     assert client.calls == [
         {
             "name": "get_employee_info",
@@ -117,8 +134,9 @@ async def test_call_tool_returns_structured_content_and_sends_meta() -> None:
         # No structured content: nothing reliable to reason about.
         CallToolResult(content=[TextContent(type="text", text="text only")], is_error=False),
     ],
+    ids=["server-exception", "is-error-with-content", "no-structured-content"],
 )
-async def test_failed_tool_call_is_returned_as_data(result: CallToolResult) -> None:
+async def test_call_tool_failed_call_is_returned_as_data(result: CallToolResult) -> None:
     client = FakeClient(result)
 
     out = await call_tool(
@@ -131,7 +149,7 @@ async def test_failed_tool_call_is_returned_as_data(result: CallToolResult) -> N
 
 
 @pytest.mark.anyio
-async def test_tool_error_dict_passes_through_unchanged() -> None:
+async def test_call_tool_tool_error_dict_passes_through_unchanged() -> None:
     # A tool's own error (e.g. EMPLOYEE_NOT_FOUND) is a normal answer, not a failed call.
     client = FakeClient(
         CallToolResult(
@@ -146,3 +164,23 @@ async def test_tool_error_dict_passes_through_unchanged() -> None:
     )
 
     assert out == {"error": "EMPLOYEE_NOT_FOUND", "employee_id": "E9999"}
+
+
+# ---------- traceparent ----------
+
+
+def test_traceparent_uses_w3c_format_with_padded_hex_ids() -> None:
+    # version-trace_id(32 hex)-parent_span_id(16 hex)-flags, 01 = sampled.
+    assert traceparent(1, 2) == "00-00000000000000000000000000000001-0000000000000002-01"
+
+
+# ---------- span_safe_arguments ----------
+
+
+def test_span_safe_arguments_redacts_free_text_request_and_reason() -> None:
+    # request and reason are the employee's own words and can hold names or medical details.
+    arguments = {"employee_id": "E1005", "request": "My doctor said...", "reason": "E9: back pain"}
+
+    assert span_safe_arguments(arguments) == (
+        '{"employee_id": "E1005", "reason": "[REDACTED]", "request": "[REDACTED]"}'
+    )

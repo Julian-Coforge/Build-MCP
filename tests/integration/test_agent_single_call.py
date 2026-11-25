@@ -7,7 +7,7 @@ hardcoded request. FakeMessages stands in for the paid API, so this runs free in
 import io
 import json
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -121,190 +121,330 @@ def _by_name(spans: list[dict[str, Any]], name: str) -> dict[str, Any]:
     return next(s for s in spans if s["name"] == name)
 
 
-# --- Eligibility check: the server's real verdict comes back --------------------------------
+ELIGIBILITY_INPUT = {"employee_id": "E1002", "item": "monitor"}
+SERVER_TOOL_NAMES = [
+    "check_request_eligibility",
+    "flag_for_human_review",
+    "get_employee_info",
+    "get_policy_limits",
+]
 
 
-async def test_one_tool_call_returns_server_verdict(
+@pytest.fixture
+def eligibility_run(
     server: MCPServer,
     run: Run,
     agent_logger: tuple[logging.Logger, io.StringIO],
     make_message: Callable[..., Message],
-) -> None:
-    run.fake_messages.queue(
-        make_message(
-            tool_name="check_request_eligibility",
-            tool_input={"employee_id": "E1002", "item": "monitor"},
+) -> Callable[[], Awaitable[tuple[dict[str, Any], SpyClient]]]:
+    """The model asks for one eligibility check (E1002 monitor); the real server answers."""
+
+    async def _go() -> tuple[dict[str, Any], SpyClient]:
+        run.fake_messages.queue(
+            make_message(
+                tool_name="check_request_eligibility",
+                tool_input=ELIGIBILITY_INPUT,
+                input_tokens=2000,
+                output_tokens=150,
+            )
         )
-    )
+        return await run.once(server, agent_logger[0])
 
-    result, spy = await run.once(server, agent_logger[0])
+    return _go
 
-    assert result["request_id"] == REQUEST_ID
-    assert result["tool"] == "check_request_eligibility"
-    assert result["arguments"] == {"employee_id": "E1002", "item": "monitor"}
-    assert result["result_status"] == "ok"
+
+@pytest.fixture
+def lookup_run(
+    server: MCPServer,
+    run: Run,
+    agent_logger: tuple[logging.Logger, io.StringIO],
+    make_message: Callable[..., Message],
+) -> Callable[[], Awaitable[tuple[dict[str, Any], SpyClient]]]:
+    """The model asks for E1002's employee record, which holds their name."""
+
+    async def _go() -> tuple[dict[str, Any], SpyClient]:
+        run.fake_messages.queue(
+            make_message(tool_name="get_employee_info", tool_input={"employee_id": "E1002"})
+        )
+        return await run.once(server, agent_logger[0])
+
+    return _go
+
+
+@pytest.fixture
+def no_tool_run(
+    server: MCPServer,
+    run: Run,
+    agent_logger: tuple[logging.Logger, io.StringIO],
+    make_message: Callable[..., Message],
+) -> Callable[[], Awaitable[tuple[dict[str, Any], SpyClient]]]:
+    """The model replies in text and asks for no tool."""
+
+    async def _go() -> tuple[dict[str, Any], SpyClient]:
+        run.fake_messages.queue(
+            make_message(tool_name=None, text="I can't help with that.", stop_reason="end_turn")
+        )
+        return await run.once(server, agent_logger[0])
+
+    return _go
+
+
+RunOnce = Callable[[], Awaitable[tuple[dict[str, Any], SpyClient]]]
+E1002_NAME = next(
+    e["name"]
+    for e in json.loads(config.EMPLOYEES_FILE.read_text(encoding="utf-8"))["employees"]
+    if e["employee_id"] == "E1002"
+)
+
+
+# ---------- eligibility check: the server's real verdict comes back ----------
+
+
+async def test_single_call_returns_the_call_it_made(eligibility_run: RunOnce) -> None:
+    result, _ = await eligibility_run()
+
+    assert {k: result[k] for k in ("request_id", "tool", "arguments", "result_status")} == {
+        "request_id": REQUEST_ID,
+        "tool": "check_request_eligibility",
+        "arguments": ELIGIBILITY_INPUT,
+        "result_status": "ok",
+    }
+
+
+async def test_single_call_returns_the_server_verdict(eligibility_run: RunOnce) -> None:
     # Decided by the real server's tested Python, not by the model (CLAUDE.md principle).
-    assert result["result"]["status"] == "ELIGIBLE"
-    assert result["result"]["rule_id"] == "R-NEW"
+    result, _ = await eligibility_run()
+
+    assert (result["result"]["status"], result["result"]["rule_id"]) == ("ELIGIBLE", "R-NEW")
+
+
+async def test_single_call_makes_exactly_one_tool_call(eligibility_run: RunOnce) -> None:
+    _, spy = await eligibility_run()
+
     assert len(spy.tool_calls) == 1
 
 
-async def test_model_gets_server_tools_system_prompt_and_request(
-    server: MCPServer,
-    run: Run,
-    agent_logger: tuple[logging.Logger, io.StringIO],
-    make_message: Callable[..., Message],
+async def test_single_call_makes_exactly_one_model_call(eligibility_run: RunOnce, run: Run) -> None:
+    # One model call only; the loop is M6.
+    await eligibility_run()
+
+    assert len(run.fake_messages.calls) == 1
+
+
+async def test_single_call_sends_the_server_tools(eligibility_run: RunOnce, run: Run) -> None:
+    await eligibility_run()
+
+    assert sorted(t["name"] for t in run.fake_messages.calls[0]["tools"]) == SERVER_TOOL_NAMES
+
+
+async def test_single_call_sends_system_prompt_and_request(
+    eligibility_run: RunOnce, run: Run
 ) -> None:
-    run.fake_messages.queue(make_message(tool_name="get_employee_info"))
-
-    await run.once(server, agent_logger[0])
-
-    assert len(run.fake_messages.calls) == 1  # one model call only; the loop is M6
+    await eligibility_run()
     sent = run.fake_messages.calls[0]
-    assert sorted(t["name"] for t in sent["tools"]) == [
-        "check_request_eligibility",
-        "flag_for_human_review",
-        "get_employee_info",
-        "get_policy_limits",
-    ]
-    assert sent["system"] == SYSTEM_PROMPT_SINGLE_CALL
-    assert sent["messages"] == [{"role": "user", "content": REQUEST_TEXT}]
 
-
-async def test_ledger_has_one_line_matching_the_run(
-    server: MCPServer,
-    run: Run,
-    agent_logger: tuple[logging.Logger, io.StringIO],
-    make_message: Callable[..., Message],
-) -> None:
-    run.fake_messages.queue(
-        make_message(
-            tool_name="check_request_eligibility",
-            tool_input={"employee_id": "E1002", "item": "monitor"},
-        )
+    assert (sent["system"], sent["messages"]) == (
+        SYSTEM_PROMPT_SINGLE_CALL,
+        [{"role": "user", "content": REQUEST_TEXT}],
     )
 
-    result, _ = await run.once(server, agent_logger[0])
 
+async def test_single_call_ledger_has_one_line_for_the_run(
+    eligibility_run: RunOnce, run: Run
+) -> None:
+    result, _ = await eligibility_run()
     (line,) = run.ledger()
-    assert line["request_id"] == REQUEST_ID
-    assert line["run_id"] == result["run_id"]
-    assert line["stage"] == "single_call"
-    assert result["cost_usd"] == line["cost_usd"]
 
-
-async def test_trace_links_run_llm_call_and_tool(
-    server: MCPServer,
-    run: Run,
-    agent_logger: tuple[logging.Logger, io.StringIO],
-    make_message: Callable[..., Message],
-) -> None:
-    run.fake_messages.queue(
-        make_message(
-            tool_name="check_request_eligibility",
-            tool_input={"employee_id": "E1002", "item": "monitor"},
-        )
+    assert (line["request_id"], line["run_id"], line["stage"]) == (
+        REQUEST_ID,
+        result["run_id"],
+        "single_call",
     )
 
-    result, spy = await run.once(server, agent_logger[0])
 
+async def test_single_call_reported_cost_equals_ledger_cost(
+    eligibility_run: RunOnce, run: Run
+) -> None:
+    result, _ = await eligibility_run()
+
+    assert result["cost_usd"] == run.ledger()[0]["cost_usd"]
+
+
+# ---------- trace ----------
+
+
+async def test_single_call_root_span_has_no_parent(eligibility_run: RunOnce, run: Run) -> None:
+    await eligibility_run()
+
+    assert _by_name(run.spans(), "agent.run")["parent_span_id"] is None
+
+
+@pytest.mark.parametrize(
+    "child", ["llm.call", "tool.check_request_eligibility"], ids=["llm-call", "tool-call"]
+)
+async def test_single_call_child_span_hangs_off_the_root(
+    eligibility_run: RunOnce, run: Run, child: str
+) -> None:
+    await eligibility_run()
     spans = run.spans()
-    root = _by_name(spans, "agent.run")
-    llm_span = _by_name(spans, "llm.call")
-    tool_span = _by_name(spans, "tool.check_request_eligibility")
-    assert root["parent_span_id"] is None
-    assert llm_span["parent_span_id"] == root["span_id"]
-    assert tool_span["parent_span_id"] == root["span_id"]
-    assert {s["trace_id"] for s in spans} == {root["trace_id"]}
-    assert root["attributes"]["request_id"] == REQUEST_ID
-    assert root["attributes"]["run_id"] == result["run_id"]
-    assert root["attributes"]["model"] == config.DEV_MODEL
-    assert tool_span["attributes"]["tool"] == "check_request_eligibility"
-    assert tool_span["attributes"]["result_status"] == "ok"
+
+    assert _by_name(spans, child)["parent_span_id"] == _by_name(spans, "agent.run")["span_id"]
+
+
+async def test_single_call_every_span_shares_one_trace_id(
+    eligibility_run: RunOnce, run: Run
+) -> None:
+    await eligibility_run()
+
+    assert len({s["trace_id"] for s in run.spans()}) == 1
+
+
+async def test_single_call_root_span_names_request_run_and_model(
+    eligibility_run: RunOnce, run: Run
+) -> None:
+    result, _ = await eligibility_run()
+    attributes = _by_name(run.spans(), "agent.run")["attributes"]
+
+    assert (attributes["request_id"], attributes["run_id"], attributes["model"]) == (
+        REQUEST_ID,
+        result["run_id"],
+        config.DEV_MODEL,
+    )
+
+
+async def test_single_call_tool_span_names_tool_and_status(
+    eligibility_run: RunOnce, run: Run
+) -> None:
+    await eligibility_run()
+    attributes = _by_name(run.spans(), "tool.check_request_eligibility")["attributes"]
+
+    assert (attributes["tool"], attributes["result_status"]) == ("check_request_eligibility", "ok")
+
+
+async def test_single_call_meta_carries_request_id(eligibility_run: RunOnce) -> None:
+    _, spy = await eligibility_run()
+
+    assert spy.tool_calls[0]["meta"]["request_id"] == REQUEST_ID
+
+
+async def test_single_call_meta_carries_the_tool_span_traceparent(
+    eligibility_run: RunOnce, run: Run
+) -> None:
     # The MCP call carries the tool span's W3C traceparent, so a server span can later be
     # joined under it (PLAN §5).
-    meta = spy.tool_calls[0]["meta"]
-    assert meta["request_id"] == REQUEST_ID
-    assert meta["traceparent"] == f"00-{tool_span['trace_id']}-{tool_span['span_id']}-01"
+    _, spy = await eligibility_run()
+    tool_span = _by_name(run.spans(), "tool.check_request_eligibility")
 
-
-async def test_run_start_and_end_logged_with_cost(
-    server: MCPServer,
-    run: Run,
-    agent_logger: tuple[logging.Logger, io.StringIO],
-    make_message: Callable[..., Message],
-) -> None:
-    run.fake_messages.queue(
-        make_message(
-            tool_name="check_request_eligibility",
-            tool_input={"employee_id": "E1002", "item": "monitor"},
-            input_tokens=2000,
-            output_tokens=150,
-        )
+    assert spy.tool_calls[0]["meta"]["traceparent"] == (
+        f"00-{tool_span['trace_id']}-{tool_span['span_id']}-01"
     )
 
-    await run.once(server, agent_logger[0])
 
-    logs = run.logs()
-    events = [r["event"] for r in logs]
-    assert events[0] == "run.start"
-    assert events[-1] == "run.end"
-    end = logs[-1]
-    assert end["cost_usd"] == run.ledger()[0]["cost_usd"]
-    assert (end["input_tokens"], end["output_tokens"]) == (2000, 150)
+# ---------- run logs ----------
+
+
+async def test_single_call_logs_run_start_first_and_run_end_last(
+    eligibility_run: RunOnce, run: Run
+) -> None:
+    await eligibility_run()
+    events = [r["event"] for r in run.logs()]
+
+    assert (events[0], events[-1]) == ("run.start", "run.end")
+
+
+async def test_single_call_run_end_has_ledger_cost_and_tokens(
+    eligibility_run: RunOnce, run: Run
+) -> None:
+    await eligibility_run()
+    end = run.logs()[-1]
+
+    assert (end["cost_usd"], end["input_tokens"], end["output_tokens"]) == (
+        run.ledger()[0]["cost_usd"],
+        2000,
+        150,
+    )
+
+
+async def test_single_call_request_text_is_logged_at_debug(
+    eligibility_run: RunOnce, run: Run
+) -> None:
+    await eligibility_run()
+
+    with_text = [r for r in run.logs() if REQUEST_TEXT in json.dumps(r)]
+
+    assert len(with_text) >= 1
+
+
+async def test_single_call_request_text_is_never_logged_above_debug(
+    eligibility_run: RunOnce, run: Run
+) -> None:
     # The request text is logged at DEBUG only, never at INFO or above (PLAN §5).
-    with_text = [r for r in logs if REQUEST_TEXT in json.dumps(r)]
-    assert with_text
-    assert all(r["level"] == "DEBUG" for r in with_text)
+    await eligibility_run()
+
+    with_text = [r for r in run.logs() if REQUEST_TEXT in json.dumps(r)]
+
+    assert {r["level"] for r in with_text} == {"DEBUG"}
 
 
-# --- Lookup: the employee's name never leaves the tool result ----------------------------------
+# ---------- lookup: the employee's name never leaves the tool result ----------
 
 
-async def test_employee_name_is_never_traced_logged_or_ledgered(
-    server: MCPServer,
-    run: Run,
-    agent_logger: tuple[logging.Logger, io.StringIO],
-    make_message: Callable[..., Message],
-) -> None:
-    employees = json.loads(config.EMPLOYEES_FILE.read_text(encoding="utf-8"))["employees"]
-    name = next(e["name"] for e in employees if e["employee_id"] == "E1002")
-    run.fake_messages.queue(
-        make_message(tool_name="get_employee_info", tool_input={"employee_id": "E1002"})
+async def test_single_call_lookup_gives_the_agent_the_name(lookup_run: RunOnce) -> None:
+    result, _ = await lookup_run()
+
+    assert result["result"]["name"] == E1002_NAME
+
+
+OUTPUTS = ["trace", "ledger", "log"]
+
+
+def _written(run: Run, output: str) -> str:
+    paths = {"trace": run.trace_path, "ledger": run.ledger_path}
+    return (
+        paths[output].read_text(encoding="utf-8") if output in paths else run.log_stream.getvalue()
     )
 
-    result, _ = await run.once(server, agent_logger[0])
 
-    assert result["result"]["name"] == name  # the agent does receive it...
-    for text in (
-        run.trace_path.read_text(encoding="utf-8"),
-        run.ledger_path.read_text(encoding="utf-8"),
-        run.log_stream.getvalue(),
-    ):
-        assert name not in text  # ...but it is never written anywhere
-        assert name.split()[0] not in text
+@pytest.mark.parametrize("output", OUTPUTS, ids=str)
+@pytest.mark.parametrize(
+    "secret", [E1002_NAME, E1002_NAME.split()[0]], ids=["full-name", "first-name"]
+)
+async def test_single_call_name_is_never_written(
+    lookup_run: RunOnce, run: Run, output: str, secret: str
+) -> None:
+    await lookup_run()
+
+    assert secret not in _written(run, output)
+
+
+async def test_single_call_lookup_span_names_the_data_version(
+    lookup_run: RunOnce, run: Run
+) -> None:
+    await lookup_run()
+
     tool_span = _by_name(run.spans(), "tool.get_employee_info")
+
     assert tool_span["attributes"]["data_version"] == "employees-v1"
 
 
-# --- No tool call: nothing is sent to the server ------------------------------------------------
+# ---------- no tool call: nothing is sent to the server ----------
 
 
-async def test_reply_without_tool_use_makes_no_tool_call(
-    server: MCPServer,
-    run: Run,
-    agent_logger: tuple[logging.Logger, io.StringIO],
-    make_message: Callable[..., Message],
-    server_log: io.StringIO,
+async def test_single_call_text_reply_returns_no_tool_call_error(no_tool_run: RunOnce) -> None:
+    result, _ = await no_tool_run()
+
+    assert (result["error"], result["request_id"]) == ("NO_TOOL_CALL", REQUEST_ID)
+
+
+async def test_single_call_text_reply_sends_nothing_to_the_server(
+    no_tool_run: RunOnce, server_log: io.StringIO
 ) -> None:
-    run.fake_messages.queue(
-        make_message(tool_name=None, text="I can't help with that.", stop_reason="end_turn")
-    )
+    _, spy = await no_tool_run()
 
-    result, spy = await run.once(server, agent_logger[0])
+    assert (spy.tool_calls, "tool.call" in server_log.getvalue()) == ([], False)
 
-    assert result["error"] == "NO_TOOL_CALL"
-    assert result["request_id"] == REQUEST_ID
-    assert spy.tool_calls == []
-    assert "tool.call" not in server_log.getvalue()
-    assert not any(s["name"].startswith("tool.") for s in run.spans())
+
+async def test_single_call_text_reply_writes_no_tool_span(no_tool_run: RunOnce, run: Run) -> None:
+    await no_tool_run()
+
+    assert [s["name"] for s in run.spans() if s["name"].startswith("tool.")] == []

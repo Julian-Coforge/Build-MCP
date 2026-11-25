@@ -4,7 +4,7 @@ import io
 import json
 import logging
 from collections.abc import Iterator
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -45,24 +45,29 @@ def _only_record(stream: io.StringIO) -> dict[str, Any]:
     return record
 
 
-# --- JsonFormatter / log_event ---------------------------------------------------
+# ---------- JsonFormatter / log_event ----------
 
 
-def test_log_event_writes_one_json_line(captured: tuple[logging.Logger, io.StringIO]) -> None:
+def test_log_event_writes_one_json_line_with_fields(
+    captured: tuple[logging.Logger, io.StringIO],
+) -> None:
     logger, stream = captured
 
     log_event(logger, "tool.call", tool="get_employee_info", employee_id="E1001")
 
     record = _only_record(stream)
-    assert record["level"] == "INFO"
-    assert record["component"] == logger.name
-    assert record["event"] == "tool.call"
-    assert record["tool"] == "get_employee_info"
-    assert record["employee_id"] == "E1001"
-    assert "ts" in record
+
+    # Every field except ts (wall clock, checked below) and the null correlation ids.
+    assert {k: record[k] for k in ("level", "component", "event", "tool", "employee_id")} == {
+        "level": "INFO",
+        "component": logger.name,
+        "event": "tool.call",
+        "tool": "get_employee_info",
+        "employee_id": "E1001",
+    }
 
 
-def test_log_event_respects_level(captured: tuple[logging.Logger, io.StringIO]) -> None:
+def test_log_event_level_argument_sets_level(captured: tuple[logging.Logger, io.StringIO]) -> None:
     logger, stream = captured
 
     log_event(logger, "budget.near_limit", level=logging.WARNING)
@@ -70,19 +75,26 @@ def test_log_event_respects_level(captured: tuple[logging.Logger, io.StringIO]) 
     assert _only_record(stream)["level"] == "WARNING"
 
 
-def test_ts_is_utc_iso_with_z(captured: tuple[logging.Logger, io.StringIO]) -> None:
+def test_log_event_ts_ends_with_z(captured: tuple[logging.Logger, io.StringIO]) -> None:
     logger, stream = captured
 
     log_event(logger, "x")
 
-    ts = _only_record(stream)["ts"]
-    assert ts.endswith("Z")
-    parsed = datetime.fromisoformat(ts)
-    assert parsed.utcoffset() is not None
-    assert parsed.utcoffset().total_seconds() == 0  # type: ignore[union-attr]
+    assert _only_record(stream)["ts"].endswith("Z")
 
 
-def test_request_id_null_by_default(captured: tuple[logging.Logger, io.StringIO]) -> None:
+def test_log_event_ts_parses_as_utc(captured: tuple[logging.Logger, io.StringIO]) -> None:
+    logger, stream = captured
+
+    log_event(logger, "x")
+    parsed = datetime.fromisoformat(_only_record(stream)["ts"])
+
+    assert parsed.utcoffset() == timedelta(0)
+
+
+def test_log_event_request_id_is_null_by_default(
+    captured: tuple[logging.Logger, io.StringIO],
+) -> None:
     logger, stream = captured
 
     log_event(logger, "x")
@@ -90,7 +102,7 @@ def test_request_id_null_by_default(captured: tuple[logging.Logger, io.StringIO]
     assert _only_record(stream)["request_id"] is None
 
 
-def test_request_id_taken_from_context_var(
+def test_log_event_request_id_comes_from_context_var(
     captured: tuple[logging.Logger, io.StringIO],
 ) -> None:
     logger, stream = captured
@@ -103,25 +115,44 @@ def test_request_id_taken_from_context_var(
         request_id_var.reset(token)
 
     assert _only_record(stream)["request_id"] == "REQ-0001"
+
+
+def test_request_id_var_is_none_outside_a_request() -> None:
+    # The previous test resets with its token; nothing may leak into other tests.
     assert request_id_var.get() is None
 
 
-@pytest.mark.parametrize("key", ["name", "api_key"])
-def test_sensitive_fields_are_redacted(
+SECRET = "Priya Shah sk-ant-SECRET"
+# Case-insensitive: API_KEY and Authorization are how env vars and HTTP headers spell them.
+SENSITIVE_KEYS = ["name", "api_key", "API_KEY", "Authorization", "password", "token"]
+
+
+@pytest.mark.parametrize("key", SENSITIVE_KEYS, ids=str)
+def test_log_event_sensitive_field_is_redacted(
     captured: tuple[logging.Logger, io.StringIO], key: str
 ) -> None:
     logger, stream = captured
-    secret = "Priya Shah sk-ant-SECRET"
 
-    log_event(logger, "x", **{key: secret})
+    log_event(logger, "x", **{key: SECRET})
 
-    line = _lines(stream)[0]
-    assert json.loads(line)[key] == "[REDACTED]"
-    # Check the raw line too: the value must not appear anywhere, not just under its key.
-    assert secret not in line
+    assert _only_record(stream)[key] == "[REDACTED]"
 
 
-def test_date_serialises_as_iso_string(captured: tuple[logging.Logger, io.StringIO]) -> None:
+@pytest.mark.parametrize("key", SENSITIVE_KEYS, ids=str)
+def test_log_event_sensitive_value_appears_nowhere_in_the_line(
+    captured: tuple[logging.Logger, io.StringIO], key: str
+) -> None:
+    # Check the raw line: the value must not appear anywhere, not just under its key.
+    logger, stream = captured
+
+    log_event(logger, "x", **{key: SECRET})
+
+    assert SECRET not in stream.getvalue()
+
+
+def test_log_event_date_serialises_as_iso_string(
+    captured: tuple[logging.Logger, io.StringIO],
+) -> None:
     logger, stream = captured
 
     log_event(logger, "x", as_of=date(2026, 11, 22))
@@ -129,7 +160,9 @@ def test_date_serialises_as_iso_string(captured: tuple[logging.Logger, io.String
     assert _only_record(stream)["as_of"] == "2026-11-22"
 
 
-def test_exception_adds_type_and_message(captured: tuple[logging.Logger, io.StringIO]) -> None:
+def test_logger_exception_adds_type_and_message(
+    captured: tuple[logging.Logger, io.StringIO],
+) -> None:
     logger, stream = captured
 
     try:
@@ -138,16 +171,19 @@ def test_exception_adds_type_and_message(captured: tuple[logging.Logger, io.Stri
         logger.exception("load.failed")
 
     record = _only_record(stream)
-    assert record["event"] == "load.failed"
-    assert record["level"] == "ERROR"
-    assert record["exc_type"] == "ValueError"
-    assert record["exc_message"] == "bad data"
+
+    assert {k: record[k] for k in ("event", "level", "exc_type", "exc_message")} == {
+        "event": "load.failed",
+        "level": "ERROR",
+        "exc_type": "ValueError",
+        "exc_message": "bad data",
+    }
 
 
-# --- Trace correlation (PLAN §5, §6) ------------------------------------------------------
+# ---------- Trace correlation (PLAN §5, §6) ----------
 
 
-def test_log_line_inside_span_carries_its_ids(
+def test_log_event_inside_span_carries_its_ids(
     captured: tuple[logging.Logger, io.StringIO],
 ) -> None:
     logger, stream = captured
@@ -159,12 +195,15 @@ def test_log_line_inside_span_carries_its_ids(
         context = span.get_span_context()
 
     record = _only_record(stream)
+
     # Same hex format as the trace files, so a log line and its span can be matched.
-    assert record["trace_id"] == format(context.trace_id, "032x")
-    assert record["span_id"] == format(context.span_id, "016x")
+    assert (record["trace_id"], record["span_id"]) == (
+        format(context.trace_id, "032x"),
+        format(context.span_id, "016x"),
+    )
 
 
-def test_log_line_outside_span_has_null_ids(
+def test_log_event_outside_span_has_null_ids(
     captured: tuple[logging.Logger, io.StringIO],
 ) -> None:
     logger, stream = captured
@@ -172,11 +211,16 @@ def test_log_line_outside_span_has_null_ids(
     log_event(logger, "x")
 
     record = _only_record(stream)
-    assert record["trace_id"] is None
-    assert record["span_id"] is None
+
+    assert (record["trace_id"], record["span_id"]) == (None, None)
 
 
-# --- configure_logging -------------------------------------------------------------
+# ---------- configure_logging ----------
+
+
+def _flush(logger: logging.Logger) -> None:
+    for handler in logger.handlers:
+        handler.flush()
 
 
 @pytest.fixture
@@ -191,13 +235,20 @@ def component(request: pytest.FixtureRequest) -> Iterator[str]:
     logger.handlers = []
 
 
-def test_configure_logging_returns_named_logger(component: str) -> None:
-    logger = configure_logging(component)
+def test_configure_logging_returns_logger_with_the_component_name(component: str) -> None:
+    assert configure_logging(component).name == component
 
-    assert logger.name == component
-    assert logger.propagate is False
-    assert len(logger.handlers) >= 1
-    assert all(isinstance(h.formatter, JsonFormatter) for h in logger.handlers)
+
+def test_configure_logging_logger_does_not_propagate(component: str) -> None:
+    # No double lines through the root logger.
+    assert configure_logging(component).propagate is False
+
+
+def test_configure_logging_every_handler_writes_json(component: str) -> None:
+    handlers = configure_logging(component).handlers
+
+    # At least one handler, and none that writes plain text.
+    assert handlers and all(isinstance(h.formatter, JsonFormatter) for h in handlers)
 
 
 def test_configure_logging_is_idempotent(component: str, tmp_path: Path) -> None:
@@ -215,9 +266,7 @@ def test_configure_logging_writes_json_lines_to_file(component: str, tmp_path: P
     logger = configure_logging(component, log_file=log_file)
     log_event(logger, "run.start", request_id_hint="REQ-0001")
     log_event(logger, "run.end")
-    for handler in logger.handlers:
-        handler.flush()
+    _flush(logger)
 
-    assert log_file.exists()
     events = [json.loads(line)["event"] for line in log_file.read_text().splitlines()]
     assert events == ["run.start", "run.end"]

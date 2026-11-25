@@ -33,9 +33,11 @@ jobs:
       # server.py is only exercised by integration tests, so a 90% check on unit tests
       # alone would fail wrongly. The unit step disables the threshold; the integration
       # step appends to the same data and applies fail_under = 90 from pyproject.toml.
+      # -m "not slow": the live twin in tests/live needs a key and a server; -rs prints why
+      # anything was skipped.
       - name: Unit tests
-        run: pytest tests/unit --cov --cov-fail-under=0
+        run: pytest tests/unit -m "not slow" -rs --cov --cov-fail-under=0
       - name: Integration tests
-        run: pytest tests/integration --cov --cov-append --cov-report=term-missing
+        run: pytest tests/integration -m "not slow" -rs --cov --cov-append --cov-report=term-missing
       - name: Dependency audit
         run: pip-audit --skip-editable

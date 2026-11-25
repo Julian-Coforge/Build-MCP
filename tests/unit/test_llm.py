@@ -114,46 +114,108 @@ def _ledger(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
-# --- Ledger ------------------------------------------------------------------------------
+def _failed_call(llm: LLMClient, fake_messages: Any) -> None:
+    fake_messages.queue(RuntimeError("connection reset"))
+    with pytest.raises(RuntimeError):
+        _call(llm)
 
 
-def test_one_call_writes_one_ledger_line(
+def _llm_record(log_stream: io.StringIO) -> dict[str, Any]:
+    records = [json.loads(line) for line in log_stream.getvalue().splitlines()]
+    (record,) = [r for r in records if r["event"] == "llm.call"]
+    return record
+
+
+# Haiku: 10,000 x $0.10/M = $0.001; 2,000 x $0.50/M = $0.001; 1,000 cache read x
+# $0.01/M = $0.00001. Total $0.00201.
+TYPICAL_USAGE = {"input_tokens": 10_000, "output_tokens": 2_000, "cache_read_input_tokens": 1_000}
+TYPICAL_COST = 0.00201
+
+
+# ---------- ledger ----------
+
+
+def test_llm_call_writes_one_ledger_line(
     llm: LLMClient,
     fake_messages: Any,
     make_message: Callable[..., Message],
     ledger_path: Path,
 ) -> None:
-    fake_messages.queue(
-        make_message(input_tokens=10_000, output_tokens=2_000, cache_read_input_tokens=1_000)
-    )
+    fake_messages.queue(make_message(**TYPICAL_USAGE))
 
     _call(llm)
 
-    lines = _ledger(ledger_path)
-    assert len(lines) == 1
-    line = lines[0]
-    assert set(line) == LEDGER_FIELDS
-    assert line["request_id"] == "REQ-0001"
-    assert line["run_id"] == "run-1"
-    assert line["stage"] == "react_step_1"
-    assert line["model"] == "claude-haiku-5-5"
-    assert line["prompt_version"] == PROMPT_VERSION == "m6-v1"
-    assert line["env"] == "dev"
-    assert line["stop_reason"] == "tool_use"
-    assert (line["input_tokens"], line["output_tokens"]) == (10_000, 2_000)
-    assert (line["cache_read_tokens"], line["cache_write_tokens"]) == (1_000, 0)
-    # Haiku: 10,000 x $0.10/M = $0.001; 2,000 x $0.50/M = $0.001; 1,000 cache read x
-    # $0.01/M = $0.00001. Total $0.00201.
-    assert line["cost_usd"] == pytest.approx(0.00201, abs=1e-9)
+    assert len(_ledger(ledger_path)) == 1
 
 
-def test_missing_cache_counts_are_zero(
+def test_llm_call_ledger_line_has_exactly_the_ledger_fields(
+    llm: LLMClient,
+    fake_messages: Any,
+    make_message: Callable[..., Message],
+    ledger_path: Path,
+) -> None:
+    fake_messages.queue(make_message(**TYPICAL_USAGE))
+
+    _call(llm)
+
+    assert set(_ledger(ledger_path)[0]) == LEDGER_FIELDS
+
+
+def test_llm_call_ledger_line_records_ids_model_and_tokens(
+    llm: LLMClient,
+    fake_messages: Any,
+    make_message: Callable[..., Message],
+    ledger_path: Path,
+) -> None:
+    fake_messages.queue(make_message(**TYPICAL_USAGE))
+
+    _call(llm)
+    line = _ledger(ledger_path)[0]
+
+    # Everything except the wall-clock ts, which is not injected; cost is approximate.
+    assert {k: v for k, v in line.items() if k != "ts"} == pytest.approx(
+        {
+            "request_id": "REQ-0001",
+            "run_id": "run-1",
+            "stage": "react_step_1",
+            "model": "claude-haiku-5-5",
+            "prompt_version": PROMPT_VERSION,
+            "input_tokens": 10_000,
+            "output_tokens": 2_000,
+            "cache_read_tokens": 1_000,
+            "cache_write_tokens": 0,
+            "cost_usd": TYPICAL_COST,
+            "latency_ms": 250.0,
+            "env": "dev",
+            "stop_reason": "tool_use",
+        },
+        abs=1e-9,
+    )
+
+
+def test_llm_call_null_cache_counts_are_logged_as_zero(
     llm: LLMClient,
     fake_messages: Any,
     make_message: Callable[..., Message],
     ledger_path: Path,
 ) -> None:
     # The API may send null for the cache counts; that means none, not unknown.
+    fake_messages.queue(
+        make_message(cache_read_input_tokens=None, cache_creation_input_tokens=None)
+    )
+
+    _call(llm)
+    line = _ledger(ledger_path)[0]
+
+    assert (line["cache_read_tokens"], line["cache_write_tokens"]) == (0, 0)
+
+
+def test_llm_call_null_cache_counts_add_no_cost(
+    llm: LLMClient,
+    fake_messages: Any,
+    make_message: Callable[..., Message],
+    ledger_path: Path,
+) -> None:
     fake_messages.queue(
         make_message(
             input_tokens=10_000,
@@ -165,12 +227,10 @@ def test_missing_cache_counts_are_zero(
 
     _call(llm)
 
-    line = _ledger(ledger_path)[0]
-    assert (line["cache_read_tokens"], line["cache_write_tokens"]) == (0, 0)
-    assert line["cost_usd"] == pytest.approx(0.001, abs=1e-9)
+    assert _ledger(ledger_path)[0]["cost_usd"] == pytest.approx(0.001, abs=1e-9)
 
 
-def test_each_call_appends_a_line(
+def test_llm_call_each_call_appends_a_line(
     llm: LLMClient,
     fake_messages: Any,
     make_message: Callable[..., Message],
@@ -184,7 +244,7 @@ def test_each_call_appends_a_line(
     assert len(_ledger(ledger_path)) == 2
 
 
-def test_latency_comes_from_injected_clock(
+def test_llm_call_latency_comes_from_injected_clock(
     llm: LLMClient,
     fake_messages: Any,
     make_message: Callable[..., Message],
@@ -197,7 +257,7 @@ def test_latency_comes_from_injected_clock(
     assert _ledger(ledger_path)[0]["latency_ms"] == pytest.approx(250.0)
 
 
-def test_returns_the_sdk_message_unchanged(
+def test_llm_call_returns_the_sdk_message_unchanged(
     llm: LLMClient, fake_messages: Any, make_message: Callable[..., Message]
 ) -> None:
     message = make_message()
@@ -206,29 +266,30 @@ def test_returns_the_sdk_message_unchanged(
     assert _call(llm) is message
 
 
-# --- The request sent -----------------------------------------------------------------------
+# ---------- the request sent ----------
 
 
-def test_request_uses_auto_tool_choice_adaptive_thinking_and_token_cap(
+def test_llm_call_sends_auto_tool_choice_adaptive_thinking_and_token_cap(
     llm: LLMClient, fake_messages: Any, make_message: Callable[..., Message]
 ) -> None:
     fake_messages.queue(make_message())
 
     _call(llm)
 
-    sent = fake_messages.calls[0]
     # auto, not forced: forced tool_choice returns a 400 on Sonnet 5.5, and the same code
-    # runs on both models.
-    assert sent["tool_choice"] == {"type": "auto"}
-    assert sent["thinking"] == {"type": "adaptive"}
-    assert sent["max_tokens"] == 4000
-    assert sent["model"] == "claude-haiku-5-5"
-    assert sent["system"] == SYSTEM
-    assert sent["messages"] == [{"role": "user", "content": REQUEST_TEXT}]
-    assert sent["tools"] == TOOLS
+    # runs on both models. The whole request, so an unexpected extra argument also fails.
+    assert fake_messages.calls[0] == {
+        "model": "claude-haiku-5-5",
+        "max_tokens": 4000,
+        "system": SYSTEM,
+        "messages": [{"role": "user", "content": REQUEST_TEXT}],
+        "tools": TOOLS,
+        "tool_choice": {"type": "auto"},
+        "thinking": {"type": "adaptive"},
+    }
 
 
-def test_block_list_system_prompt_is_passed_through_unchanged(
+def test_llm_call_block_list_system_prompt_is_passed_through_unchanged(
     llm: LLMClient, fake_messages: Any, make_message: Callable[..., Message]
 ) -> None:
     fake_messages.queue(make_message())
@@ -254,67 +315,103 @@ def test_system_blocks_is_one_cached_text_block() -> None:
     ]
 
 
-# --- Span ----------------------------------------------------------------------------------------
+# ---------- span ----------
+
+SPAN_USAGE = {**TYPICAL_USAGE, "cache_creation_input_tokens": 500}
 
 
-def test_span_records_model_tokens_and_cost(
+def test_llm_call_emits_one_llm_call_span(
     llm: LLMClient,
     fake_messages: Any,
     make_message: Callable[..., Message],
     spans: InMemorySpanExporter,
 ) -> None:
-    fake_messages.queue(
-        make_message(
-            input_tokens=10_000,
-            output_tokens=2_000,
-            cache_read_input_tokens=1_000,
-            cache_creation_input_tokens=500,
-        )
-    )
+    fake_messages.queue(make_message(**SPAN_USAGE))
 
     _call(llm)
 
-    (span,) = spans.get_finished_spans()
-    assert span.name == "llm.call"
-    attributes = dict(span.attributes or {})
-    assert attributes["model"] == "claude-haiku-5-5"
-    assert attributes["prompt_version"] == PROMPT_VERSION
-    assert attributes["stage"] == "react_step_1"
-    assert attributes["input_tokens"] == 10_000
-    assert attributes["output_tokens"] == 2_000
-    assert attributes["cache_read_tokens"] == 1_000
-    assert attributes["cache_write_tokens"] == 500
-    assert attributes["cost_usd"] > 0
-    assert attributes["latency_ms"] == pytest.approx(250.0)
-    assert attributes["stop_reason"] == "tool_use"
+    assert [span.name for span in spans.get_finished_spans()] == ["llm.call"]
 
 
-# --- Failure ------------------------------------------------------------------------------------
-
-
-def test_failed_call_writes_no_ledger_line_and_marks_span_error(
+def test_llm_call_span_records_model_tokens_and_latency(
     llm: LLMClient,
     fake_messages: Any,
+    make_message: Callable[..., Message],
+    spans: InMemorySpanExporter,
+) -> None:
+    fake_messages.queue(make_message(**SPAN_USAGE))
+    expected = {
+        "model": "claude-haiku-5-5",
+        "prompt_version": PROMPT_VERSION,
+        "stage": "react_step_1",
+        "input_tokens": 10_000,
+        "output_tokens": 2_000,
+        "cache_read_tokens": 1_000,
+        "cache_write_tokens": 500,
+        "latency_ms": 250.0,
+        "stop_reason": "tool_use",
+    }
+
+    _call(llm)
+    (span,) = spans.get_finished_spans()
+    attributes = dict(span.attributes or {})
+
+    assert {key: attributes[key] for key in expected} == expected
+
+
+def test_llm_call_span_cost_equals_ledger_cost(
+    llm: LLMClient,
+    fake_messages: Any,
+    make_message: Callable[..., Message],
     spans: InMemorySpanExporter,
     ledger_path: Path,
 ) -> None:
+    fake_messages.queue(make_message(**SPAN_USAGE))
+
+    _call(llm)
+    (span,) = spans.get_finished_spans()
+
+    assert dict(span.attributes or {})["cost_usd"] == _ledger(ledger_path)[0]["cost_usd"]
+
+
+# ---------- failure ----------
+
+
+def test_llm_call_failure_propagates_the_exception(llm: LLMClient, fake_messages: Any) -> None:
+    # The exception propagates: the SDK has already retried, so the wrapper doesn't.
     fake_messages.queue(RuntimeError("connection reset"))
 
-    # The exception propagates: the SDK has already retried, so the wrapper doesn't.
     with pytest.raises(RuntimeError, match="connection reset"):
         _call(llm)
 
+
+def test_llm_call_failure_writes_no_ledger_line(
+    llm: LLMClient, fake_messages: Any, ledger_path: Path
+) -> None:
     # No tokens are billed for a failed request, so nothing is added to spend.
+    _failed_call(llm, fake_messages)
+
     assert not ledger_path.exists()
-    (span,) = spans.get_finished_spans()
-    assert span.status.status_code.name == "ERROR"
-    assert len(fake_messages.calls) == 1  # no retry
 
 
-# --- Log line -------------------------------------------------------------------------------------
+def test_llm_call_failure_marks_span_error(
+    llm: LLMClient, fake_messages: Any, spans: InMemorySpanExporter
+) -> None:
+    _failed_call(llm, fake_messages)
+
+    assert [s.status.status_code.name for s in spans.get_finished_spans()] == ["ERROR"]
 
 
-def test_log_line_has_numbers_but_no_prompt_content(
+def test_llm_call_failure_is_not_retried(llm: LLMClient, fake_messages: Any) -> None:
+    _failed_call(llm, fake_messages)
+
+    assert len(fake_messages.calls) == 1
+
+
+# ---------- log line ----------
+
+
+def test_llm_call_log_line_has_level_model_and_numbers(
     llm: LLMClient,
     fake_messages: Any,
     make_message: Callable[..., Message],
@@ -323,15 +420,41 @@ def test_log_line_has_numbers_but_no_prompt_content(
     fake_messages.queue(make_message(input_tokens=10_000, output_tokens=2_000))
 
     _call(llm)
+    record = _llm_record(log_stream)
 
-    records = [json.loads(line) for line in log_stream.getvalue().splitlines()]
-    (record,) = [r for r in records if r["event"] == "llm.call"]
-    assert record["level"] == "INFO"
-    assert record["input_tokens"] == 10_000
-    assert record["output_tokens"] == 2_000
-    assert record["cost_usd"] > 0
-    assert record["model"] == "claude-haiku-5-5"
-    assert {"messages", "system", "tools"}.isdisjoint(record)
+    assert (
+        record["level"],
+        record["model"],
+        record["input_tokens"],
+        record["output_tokens"],
+        record["cost_usd"] > 0,
+    ) == ("INFO", "claude-haiku-5-5", 10_000, 2_000, True)
+
+
+def test_llm_call_log_line_has_no_prompt_fields(
+    llm: LLMClient,
+    fake_messages: Any,
+    make_message: Callable[..., Message],
+    log_stream: io.StringIO,
+) -> None:
+    fake_messages.queue(make_message())
+
+    _call(llm)
+
+    assert {"messages", "system", "tools"}.isdisjoint(_llm_record(log_stream))
+
+
+@pytest.mark.parametrize("secret", ["Marcus", SYSTEM], ids=["employee-name", "system-prompt"])
+def test_llm_call_log_never_contains_prompt_text(
+    llm: LLMClient,
+    fake_messages: Any,
+    make_message: Callable[..., Message],
+    log_stream: io.StringIO,
+    secret: str,
+) -> None:
     # The request text holds an employee name: it must appear nowhere in the log.
-    assert "Marcus" not in log_stream.getvalue()
-    assert SYSTEM not in log_stream.getvalue()
+    fake_messages.queue(make_message())
+
+    _call(llm)
+
+    assert secret not in log_stream.getvalue()

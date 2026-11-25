@@ -16,33 +16,30 @@ from it_requests.data import (
     load_employees,
 )
 
-# --- The real data file ------------------------------------------------------
+# ---------- the real data file ----------
 
 
-def test_real_employee_file_loads() -> None:
-    directory = load_employees(config.EMPLOYEES_FILE)
-
-    assert len(directory.employees) == 6
-    assert directory.data_version == "employees-v1"
+def test_load_employees_real_file_has_six_employees() -> None:
+    assert len(load_employees(config.EMPLOYEES_FILE).employees) == 6
 
 
-def test_get_returns_employee_with_all_equipment() -> None:
-    directory = load_employees(config.EMPLOYEES_FILE)
-
-    employee = directory.get("E1003")
-
-    assert employee is not None
-    # Dana holds two monitors; both must survive loading as separate items.
-    assert len(employee.equipment) == 4
+def test_load_employees_real_file_has_data_version_employees_v1() -> None:
+    assert load_employees(config.EMPLOYEES_FILE).data_version == "employees-v1"
 
 
-def test_get_unknown_id_returns_none() -> None:
-    directory = load_employees(config.EMPLOYEES_FILE)
+def test_directory_get_known_id_returns_every_equipment_item() -> None:
+    # Dana holds two monitors; both must survive loading as separate items. A missing
+    # employee would fail here too (None has no .equipment).
+    employee = load_employees(config.EMPLOYEES_FILE).get("E1003")
 
-    assert directory.get("E9999") is None
+    assert len(employee.equipment) == 4  # type: ignore[union-attr]
 
 
-# --- Invalid data fails loudly ----------------------------------------------
+def test_directory_get_unknown_id_returns_none() -> None:
+    assert load_employees(config.EMPLOYEES_FILE).get("E9999") is None
+
+
+# ---------- invalid data fails loudly ----------
 # Each case starts from one small valid file and breaks exactly one thing,
 # so a failure points at the single rule that was not enforced.
 
@@ -155,7 +152,9 @@ def _missing_employees_key(d: dict[str, Any]) -> None:
     ],
     ids=lambda f: f.__name__.lstrip("_"),
 )
-def test_invalid_data_raises(tmp_path: Path, break_data: Callable[[dict[str, Any]], None]) -> None:
+def test_load_employees_invalid_data_raises(
+    tmp_path: Path, break_data: Callable[[dict[str, Any]], None]
+) -> None:
     data = copy.deepcopy(_valid_directory())
     break_data(data)
     path = _write_json(tmp_path / "employees.json", data)
@@ -164,7 +163,7 @@ def test_invalid_data_raises(tmp_path: Path, break_data: Callable[[dict[str, Any
         load_employees(path)
 
 
-def test_valid_baseline_loads(tmp_path: Path) -> None:
+def test_load_employees_valid_baseline_loads(tmp_path: Path) -> None:
     # Guards the parametrized test above: if the baseline itself were invalid,
     # every "invalid" case would pass for the wrong reason.
     path = _write_json(tmp_path / "employees.json", _valid_directory())
@@ -172,14 +171,14 @@ def test_valid_baseline_loads(tmp_path: Path) -> None:
     assert len(load_employees(path).employees) == 2
 
 
-def test_missing_file_raises_with_path_in_message(tmp_path: Path) -> None:
+def test_load_employees_missing_file_raises_naming_the_path(tmp_path: Path) -> None:
     path = tmp_path / "does_not_exist.json"
 
     with pytest.raises(DataValidationError, match="does_not_exist.json"):
         load_employees(path)
 
 
-def test_invalid_json_raises(tmp_path: Path) -> None:
+def test_load_employees_invalid_json_raises(tmp_path: Path) -> None:
     path = tmp_path / "employees.json"
     path.write_text("{not valid json", encoding="utf-8")
 
@@ -187,23 +186,17 @@ def test_invalid_json_raises(tmp_path: Path) -> None:
         load_employees(path)
 
 
-# --- Enum tuples -------------------------------------------------------------
+# ---------- enum tuples ----------
 
 
-def test_catalog_items_match_requirements() -> None:
-    # REQUIREMENTS §3: only these six items can be approved automatically.
-    assert set(CATALOG_ITEMS) == {
-        "laptop",
-        "monitor",
-        "docking_station",
-        "headset",
-        "keyboard_mouse",
-        "mobile_phone",
-    }
-    assert len(CATALOG_ITEMS) == 6
+def test_catalog_items_are_exactly_the_six_requirements_items() -> None:
+    # REQUIREMENTS §3: only these six items can be approved automatically. Sorted lists
+    # catch a missing, an extra and a duplicated item in one comparison.
+    assert sorted(CATALOG_ITEMS) == sorted(
+        ["laptop", "monitor", "docking_station", "headset", "keyboard_mouse", "mobile_phone"]
+    )
 
 
-def test_roles_match_requirements() -> None:
+def test_roles_are_exactly_the_four_requirements_roles() -> None:
     # REQUIREMENTS §2.2 / §4.1: exactly four roles.
-    assert set(ROLES) == {"standard", "engineer", "manager", "contractor"}
-    assert len(ROLES) == 4
+    assert sorted(ROLES) == sorted(["standard", "engineer", "manager", "contractor"])

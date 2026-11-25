@@ -50,7 +50,7 @@ APPROVE = FinalAnswer(
 )
 
 
-def test_approve_trace() -> None:
+def test_format_trace_approve_renders_every_line() -> None:
     result = _result(steps=(LOOKUP, CHECK), final=APPROVE, final_thought="Eligible under R-NEW.")
 
     assert format_trace(result) == "\n".join(
@@ -69,13 +69,15 @@ def test_approve_trace() -> None:
     )
 
 
-def test_deny_shows_rule() -> None:
+def test_format_trace_deny_shows_rule() -> None:
     deny = FinalAnswer(decision="deny", rule_id="R-REFRESH", draft_reply="Denied (R-REFRESH).")
+
     text = format_trace(_result(steps=(LOOKUP,), final=deny))
+
     assert "Final Answer: DENY (rule R-REFRESH)" in text
 
 
-def test_escalate_shows_code_and_review_id() -> None:
+def test_format_trace_escalate_shows_code_and_review_id() -> None:
     escalate = FinalAnswer(
         decision="escalate",
         rule_id=None,
@@ -83,27 +85,46 @@ def test_escalate_shows_code_and_review_id() -> None:
         reason_code="E6",
         draft_reply="Sent for review, reference REV-0001.",
     )
+
     text = format_trace(_result(steps=(LOOKUP,), final=escalate))
+
     assert "Final Answer: ESCALATE (E6, review REV-0001)" in text
 
 
-def test_guard_line_appears_after_the_step_it_followed() -> None:
+def _guarded_lines() -> list[str]:
     guard = GuardEvent(after_step=1, tool="final_answer", codes=("C1", "REQUIRED_CALLS"))
-    lines = format_trace(_result(steps=(LOOKUP, CHECK), final=APPROVE, guard_events=(guard,)))
-    lines_list = lines.splitlines()
-    guard_index = lines_list.index("GUARD: blocked final_answer (C1, REQUIRED_CALLS)")
-    # After the first step's Observation, before the second step's Thought.
-    assert lines_list[guard_index - 1].startswith('Observation: {"employee_id": "E1002", "role"')
-    assert lines_list[guard_index + 1] == "Thought: Now check eligibility for a monitor."
+    text = format_trace(_result(steps=(LOOKUP, CHECK), final=APPROVE, guard_events=(guard,)))
+    return text.splitlines()
 
 
-def test_guard_before_any_step() -> None:
+GUARD_LINE = "GUARD: blocked final_answer (C1, REQUIRED_CALLS)"
+
+
+def test_format_trace_guard_line_follows_its_step_observation() -> None:
+    lines = _guarded_lines()
+
+    previous = lines[lines.index(GUARD_LINE) - 1]
+
+    assert previous.startswith('Observation: {"employee_id": "E1002", "role"')
+
+
+def test_format_trace_guard_line_comes_before_the_next_thought() -> None:
+    lines = _guarded_lines()
+
+    following = lines[lines.index(GUARD_LINE) + 1]
+
+    assert following == "Thought: Now check eligibility for a monitor."
+
+
+def test_format_trace_guard_before_any_step_is_the_first_line() -> None:
     guard = GuardEvent(after_step=0, tool="final_answer", codes=("C1",))
+
     lines = format_trace(_result(steps=(LOOKUP,), final=APPROVE, guard_events=(guard,)))
+
     assert lines.splitlines()[0] == "GUARD: blocked final_answer (C1)"
 
 
-def test_fallback_is_labelled() -> None:
+def _fallback_text() -> str:
     flag_step = Step(
         thought="Fallback: final answer rejected twice.",
         tool="flag_for_human_review",
@@ -117,16 +138,31 @@ def test_fallback_is_labelled() -> None:
         reason_code="E11",
         draft_reply="Sent for review, reference REV-0001.",
     )
-    text = format_trace(_result(steps=(flag_step,), final=final, fallback=True))
-    assert "Final Answer (fallback): ESCALATE (E11, review REV-0001)" in text
-    assert "Final Answer: " not in text
+    return format_trace(_result(steps=(flag_step,), final=final, fallback=True))
 
 
-def test_missing_thought_and_reply_are_shown_as_none() -> None:
+def test_format_trace_fallback_is_labelled() -> None:
+    assert "Final Answer (fallback): ESCALATE (E11, review REV-0001)" in _fallback_text()
+
+
+def test_format_trace_fallback_has_no_plain_final_answer_line() -> None:
+    assert "Final Answer: " not in _fallback_text()
+
+
+def _bare_lines() -> list[str]:
     step = Step(thought="", tool="get_employee_info", arguments={}, observation={})
     final = FinalAnswer(decision="approve", rule_id="R-NEW")
-    lines = format_trace(_result(steps=(step,), final=final)).splitlines()
-    assert lines[0] == "Thought: (none)"
-    assert lines[-1] == "Reply: (none)"
-    # No final thought: no extra Thought line before the Final Answer.
-    assert lines[-3].startswith("Observation:")
+    return format_trace(_result(steps=(step,), final=final)).splitlines()
+
+
+def test_format_trace_missing_thought_is_shown_as_none() -> None:
+    assert _bare_lines()[0] == "Thought: (none)"
+
+
+def test_format_trace_missing_reply_is_shown_as_none() -> None:
+    assert _bare_lines()[-1] == "Reply: (none)"
+
+
+def test_format_trace_no_final_thought_adds_no_thought_line() -> None:
+    # No final thought: the Final Answer follows the last Observation directly.
+    assert _bare_lines()[-3].startswith("Observation:")

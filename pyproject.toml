@@ -44,7 +44,14 @@ packages = ["src/it_requests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers"
+# -m "not slow" here too, so a plain `pytest` never spends money. A later -m on the command
+# line replaces it: `make test-live` passes -m slow.
+addopts = "-ra --strict-markers -m 'not slow'"
+# Registered so a typo in a marker fails loudly (--strict-markers).
+markers = [
+    "slow: real network, real model or other slow resource (deselected by default)",
+    "eval: calls the paid Claude API; skipped when ANTHROPIC_API_KEY is not set",
+]
 
 [tool.coverage.run]
 source = ["it_requests"]

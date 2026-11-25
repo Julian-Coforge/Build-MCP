@@ -15,7 +15,7 @@ def policy() -> PolicyTable:
     return load_policy(config.POLICY_FILE)
 
 
-# --- normalize_role -----------------------------------------------------------------
+# ---------- normalize_role ----------
 
 
 @pytest.mark.parametrize(
@@ -33,25 +33,46 @@ def policy() -> PolicyTable:
         ("managers", None),
         ("man ager", None),
     ],
+    ids=[
+        "lower",
+        "title-case",
+        "padded-upper",
+        "contractor",
+        "tab-newline",
+        "unknown",
+        "empty",
+        "blank",
+        "admin",
+        "plural",
+        "split-word",
+    ],
 )
-def test_normalize_role(raw: str, expected: str | None) -> None:
+def test_normalize_role_trims_lowercases_or_returns_none(raw: str, expected: str | None) -> None:
     assert normalize_role(raw) == expected
 
 
-# --- get_policy_limits: success ---------------------------------------------------------
+# ---------- get_policy_limits: success ----------
 
 
-def test_standard_returns_all_items_with_exact_values(policy: PolicyTable) -> None:
-    result = get_policy_limits("standard", policy=policy)
+def test_get_policy_limits_standard_returns_whole_record(policy: PolicyTable) -> None:
+    # The whole value: role, every item with exact limits, data_version, and no error key.
+    assert get_policy_limits("standard", policy=policy) == {
+        "role": "standard",
+        "limits": {
+            "laptop": {"max": 1, "refresh_months": 36},
+            "monitor": {"max": 1, "refresh_months": 36},
+            "docking_station": {"max": 1, "refresh_months": "none"},
+            "headset": {"max": 1, "refresh_months": 24},
+            "keyboard_mouse": {"max": 1, "refresh_months": 24},
+            "mobile_phone": {"max": 0, "refresh_months": None},
+        },
+        "data_version": "policy-v1",
+    }
 
-    assert result["role"] == "standard"
-    assert result["data_version"] == "policy-v1"
+
+def test_get_policy_limits_lists_items_in_catalog_order(policy: PolicyTable) -> None:
     # Same order as CATALOG_ITEMS on every call, so output is deterministic.
-    assert list(result["limits"]) == list(CATALOG_ITEMS)
-    assert result["limits"]["laptop"] == {"max": 1, "refresh_months": 36}
-    assert result["limits"]["docking_station"] == {"max": 1, "refresh_months": "none"}
-    assert result["limits"]["mobile_phone"] == {"max": 0, "refresh_months": None}
-    assert "error" not in result
+    assert list(get_policy_limits("standard", policy=policy)["limits"]) == list(CATALOG_ITEMS)
 
 
 # max per item in CATALOG_ITEMS order (laptop, monitor, docking_station, headset,
@@ -64,46 +85,62 @@ EXPECTED_MAX = {
 }
 
 
-@pytest.mark.parametrize("role", list(EXPECTED_MAX))
-def test_every_role_matches_requirements_table(policy: PolicyTable, role: str) -> None:
+@pytest.mark.parametrize("role", list(EXPECTED_MAX), ids=str)
+def test_get_policy_limits_role_max_matches_requirements_table(
+    policy: PolicyTable, role: str
+) -> None:
+    # A list over all six items also catches a missing or extra item (length differs).
     limits = get_policy_limits(role, policy=policy)["limits"]
 
-    assert len(limits) == 6
-    assert [limits[item]["max"] for item in CATALOG_ITEMS] == EXPECTED_MAX[role]
+    assert [limits[item]["max"] for item in limits] == EXPECTED_MAX[role]
 
 
-def test_contractor_not_entitled_to_desk_hardware(policy: PolicyTable) -> None:
+@pytest.mark.parametrize("item", ["laptop", "monitor", "docking_station"], ids=str)
+def test_get_policy_limits_contractor_desk_hardware_is_not_entitled(
+    policy: PolicyTable, item: str
+) -> None:
+    # null, not "none": "not entitled" (R-ROLE) must stay distinct from
+    # "entitled, no refresh cycle" (R-LIMIT), so the model never infers it from max.
     limits = get_policy_limits("contractor", policy=policy)["limits"]
 
-    for item in ("laptop", "monitor", "docking_station"):
-        # null, not "none": "not entitled" (R-ROLE) must stay distinct from
-        # "entitled, no refresh cycle" (R-LIMIT), so the model never infers it from max.
-        assert limits[item] == {"max": 0, "refresh_months": None}
+    assert limits[item] == {"max": 0, "refresh_months": None}
 
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [("Manager", "manager"), (" ENGINEER ", "engineer"), ("Contractor", "contractor")],
+    ids=["title-case", "padded-upper", "contractor"],
 )
-def test_role_lookup_is_case_insensitive(policy: PolicyTable, raw: str, expected: str) -> None:
-    result = get_policy_limits(raw, policy=policy)
+def test_get_policy_limits_mixed_case_role_returns_normalised_role(
+    policy: PolicyTable, raw: str, expected: str
+) -> None:
+    assert get_policy_limits(raw, policy=policy)["role"] == expected
 
-    assert result["role"] == expected
-    assert "limits" in result
+
+@pytest.mark.parametrize("raw", ["Manager", " ENGINEER ", "Contractor"], ids=str.strip)
+def test_get_policy_limits_mixed_case_role_returns_limits(policy: PolicyTable, raw: str) -> None:
+    assert "limits" in get_policy_limits(raw, policy=policy)
 
 
-def test_result_is_json_serialisable_with_null(policy: PolicyTable) -> None:
+def test_get_policy_limits_json_writes_not_entitled_as_null(policy: PolicyTable) -> None:
     # The MCP layer sends this as JSON: it must serialise, and None must become null.
     text = json.dumps(get_policy_limits("standard", policy=policy))
 
     assert '"mobile_phone": {"max": 0, "refresh_months": null}' in text
+
+
+def test_get_policy_limits_json_keeps_none_refresh_as_string(policy: PolicyTable) -> None:
+    text = json.dumps(get_policy_limits("standard", policy=policy))
+
     assert '"docking_station": {"max": 1, "refresh_months": "none"}' in text
 
 
-# --- get_policy_limits: errors returned as data -------------------------------------------
+# ---------- get_policy_limits: errors returned as data ----------
 
 
-@pytest.mark.parametrize("raw", ["intern", "", "admin"])
-def test_unknown_role_returns_error_with_raw_input(policy: PolicyTable, raw: str) -> None:
+@pytest.mark.parametrize("raw", ["intern", "", "admin"], ids=["intern", "empty", "admin"])
+def test_get_policy_limits_unknown_role_returns_error_with_raw_input(
+    policy: PolicyTable, raw: str
+) -> None:
     # Raw input echoed unchanged, so the model sees exactly what it sent.
     assert get_policy_limits(raw, policy=policy) == {"error": "UNKNOWN_ROLE", "role": raw}

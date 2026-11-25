@@ -2,7 +2,7 @@
 
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -44,58 +44,97 @@ def test_parent_and_child_write_two_lines(trace_path: Path) -> None:
     _run_parent_and_child(trace_path)
 
     spans = _spans(trace_path)
+
     assert sorted(s["name"] for s in spans) == ["agent.run", "llm.call"]
 
 
-def test_child_links_to_parent(trace_path: Path) -> None:
+def _written(path: Path, name: str) -> dict[str, Any]:
+    """Run the parent/child pair, then return the span with this name from the file."""
+    _run_parent_and_child(path)
+    return _by_name(_spans(path), name)
+
+
+SPAN_NAMES = ["agent.run", "llm.call"]
+
+
+def test_child_span_links_to_parent_span_id(trace_path: Path) -> None:
     _run_parent_and_child(trace_path)
 
     spans = _spans(trace_path)
-    parent, child = _by_name(spans, "agent.run"), _by_name(spans, "llm.call")
-    assert child["parent_span_id"] == parent["span_id"]
-    assert child["trace_id"] == parent["trace_id"]
-    assert parent["parent_span_id"] is None  # the root span has no parent
+
+    assert _by_name(spans, "llm.call")["parent_span_id"] == _by_name(spans, "agent.run")["span_id"]
 
 
-def test_ids_are_hex_of_the_right_length(trace_path: Path) -> None:
-    _run_parent_and_child(trace_path)
-
-    for span in _spans(trace_path):
-        assert HEX32.fullmatch(span["trace_id"])
-        assert HEX16.fullmatch(span["span_id"])
-
-
-def test_times_are_utc_iso_with_duration(trace_path: Path) -> None:
-    _run_parent_and_child(trace_path)
-
-    for span in _spans(trace_path):
-        start, end = datetime.fromisoformat(span["start"]), datetime.fromisoformat(span["end"])
-        assert start.utcoffset() is not None and start.utcoffset().total_seconds() == 0  # type: ignore[union-attr]
-        assert end >= start
-        assert isinstance(span["duration_ms"], int | float)
-        assert span["duration_ms"] >= 0
-
-
-def test_attributes_round_trip(trace_path: Path) -> None:
+def test_child_span_shares_the_parent_trace_id(trace_path: Path) -> None:
     _run_parent_and_child(trace_path)
 
     spans = _spans(trace_path)
-    assert _by_name(spans, "agent.run")["attributes"] == {"request_id": "REQ-0001"}
-    assert _by_name(spans, "llm.call")["attributes"] == {
-        "model": "claude-haiku-5-5",
-        "input_tokens": 1200,
-        "cached": True,
-    }
+
+    assert _by_name(spans, "llm.call")["trace_id"] == _by_name(spans, "agent.run")["trace_id"]
+
+
+def test_root_span_has_no_parent(trace_path: Path) -> None:
+    assert _written(trace_path, "agent.run")["parent_span_id"] is None
+
+
+@pytest.mark.parametrize("name", SPAN_NAMES, ids=str)
+def test_span_trace_id_is_32_hex_chars(trace_path: Path, name: str) -> None:
+    assert HEX32.fullmatch(_written(trace_path, name)["trace_id"])
+
+
+@pytest.mark.parametrize("name", SPAN_NAMES, ids=str)
+def test_span_span_id_is_16_hex_chars(trace_path: Path, name: str) -> None:
+    assert HEX16.fullmatch(_written(trace_path, name)["span_id"])
+
+
+@pytest.mark.parametrize("name", SPAN_NAMES, ids=str)
+def test_span_start_is_utc(trace_path: Path, name: str) -> None:
+    start = datetime.fromisoformat(_written(trace_path, name)["start"])
+
+    assert start.utcoffset() == timedelta(0)
+
+
+@pytest.mark.parametrize("name", SPAN_NAMES, ids=str)
+def test_span_end_is_not_before_start(trace_path: Path, name: str) -> None:
+    span = _written(trace_path, name)
+
+    assert datetime.fromisoformat(span["end"]) >= datetime.fromisoformat(span["start"])
+
+
+@pytest.mark.parametrize("name", SPAN_NAMES, ids=str)
+def test_span_duration_is_a_non_negative_number(trace_path: Path, name: str) -> None:
+    duration = _written(trace_path, name)["duration_ms"]
+
+    assert isinstance(duration, int | float) and duration >= 0
+
+
+@pytest.mark.parametrize(
+    ("name", "attributes"),
+    [
+        ("agent.run", {"request_id": "REQ-0001"}),
+        ("llm.call", {"model": "claude-haiku-5-5", "input_tokens": 1200, "cached": True}),
+    ],
+    ids=SPAN_NAMES,
+)
+def test_span_attributes_round_trip(
+    trace_path: Path, name: str, attributes: dict[str, Any]
+) -> None:
+    assert _written(trace_path, name)["attributes"] == attributes
 
 
 def test_second_run_appends_not_overwrites(trace_path: Path) -> None:
-    # Re-running the same request keeps its history; each run has its own trace_id.
+    # Re-running the same request keeps its history.
     _run_parent_and_child(trace_path)
     _run_parent_and_child(trace_path)
 
-    spans = _spans(trace_path)
-    assert len(spans) == 4
-    assert len({s["trace_id"] for s in spans}) == 2
+    assert len(_spans(trace_path)) == 4
+
+
+def test_second_run_gets_its_own_trace_id(trace_path: Path) -> None:
+    _run_parent_and_child(trace_path)
+    _run_parent_and_child(trace_path)
+
+    assert len({s["trace_id"] for s in _spans(trace_path)}) == 2
 
 
 def test_span_with_exception_has_error_status(trace_path: Path) -> None:
@@ -104,8 +143,7 @@ def test_span_with_exception_has_error_status(trace_path: Path) -> None:
         raise ValueError("boom")
     provider.shutdown()
 
-    span = _spans(trace_path)[0]
-    assert span["status"] == "ERROR"
+    assert _spans(trace_path)[0]["status"] == "ERROR"
 
 
 def test_normal_span_is_not_error(trace_path: Path) -> None:

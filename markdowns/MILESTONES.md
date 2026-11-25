@@ -3,7 +3,7 @@
 > Where the project is right now. Updated as each item is finished.
 > Details for each milestone are in `PLAN.md` §13; what the code does is in `codebase.md`.
 
-**Current stage:** M6 verified and merged (Sonnet eval 12/12). Put #5 to #7 in the LaTeX, then **M7** (reflection).
+**Current stage:** M6 merged; AAA test refactor merged (PR #9, 1,011 tests, 99.74% coverage). **M7** (reflection) prompt pack ready in `markdowns/prompts/M7.md`.
 **Due:** 2026-11-26 · **LLM spend so far:** $0.00 of the $5 budget (code gate at $4.00)
 
 Legend: `[x]` done · `[ ]` not done · 📸 = screenshot for the submission PDF (number = deliverable order)

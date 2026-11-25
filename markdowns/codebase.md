@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-25, milestone M6 (the ReAct loop, guards C1 to C3, C6 and C7, eval cases and live Sonnet results). M1 to M6 are verified.
+**Last updated:** 2026-11-25, milestone M7 in progress (failing tests for the deterministic half of reflection, `agent/reflection.py`, and the reflection prompt). M1 to M6 are verified.
 
 ---
 
@@ -306,7 +306,7 @@ Build-MCP/
 │   └── policy.json         # role entitlements (REQUIREMENTS §4.1)
 ├── tests/
 │   ├── conftest.py         # FakeMessages: a fake Anthropic messages API (real SDK types)
-│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report, test_guards, test_tools, test_prompts, test_trace_format, test_evals, test_test_style (AAA style guard)
+│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report, test_guards, test_tools, test_prompts, test_trace_format, test_evals, test_reflection (M7, red), test_test_style (AAA style guard)
 │   ├── integration/        # conftest (server, server_log, call_tool, listed_tools, tool_call_records), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools, test_agent_single_call, test_agent_loop, test_server_meta
 │   └── live/               # test_real_agent: one PAID T1 run on Haiku (slow, eval); `make test-live` only
 ├── scripts/
@@ -731,6 +731,7 @@ Each entry: the decision, and why.
 | 2026-11-24 | M6 | `agent/loop.py` (`run_agent`, `AgentRequest`, `AgentResult`, `Step`, `GuardEvent`), `agent/trace_format.py` (`format_trace`); `traceparent` and `span_safe_arguments` moved to `mcp_bridge.py` | The ReAct loop with guards, the step cap and the E11 fallback enforced in code, plus the printed trace |
 | 2026-11-24 | M6 | `evals/cases.json` (T1 to T12, `cases-v1`); failing tests for the eval helpers (`test_evals.py`) and for the server logging `request_id` from `_meta` (`test_server_meta.py`) | TDD red step |
 | 2026-11-24 | M6 | `evals.py`; `server.py` reads `request_id` from `_meta`; `guards.cites` made public; `scripts/run_agent.py`, `scripts/run_eval.py`; `make agent` and `make eval` | Live runs with a printed trace, a graded eval, and server logs joined to the agent's `request_id` |
+| 2026-11-25 | M7 | Failing tests for the deterministic reflection checks, the `reflection_verdict` tool and `parse_verdict` (`test_reflection.py`), and for `SYSTEM_PROMPT_REFLECTION` and `PROMPT_VERSION` `m7-v1` (`test_prompts.py`) | TDD red step |
 
 ## 7. Known issues and fixes
 

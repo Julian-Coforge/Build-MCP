@@ -80,7 +80,7 @@ def cites(text: str | None, token: str | None) -> bool:
     return re.search(rf"(?<![\w-]){re.escape(token)}(?![\w-])", text) is not None
 
 
-def _latest_verdict(observations: Sequence[Observation]) -> dict[str, Any] | None:
+def latest_verdict(observations: Sequence[Observation]) -> dict[str, Any] | None:
     """The newest successful eligibility result.
 
     The latest check decides: an older ELIGIBLE (perhaps for another item) can't back an
@@ -115,7 +115,7 @@ def check_tool_call(tool: str, observations: Sequence[Observation]) -> str | Non
 
 def _check_approve(answer: FinalAnswer, observations: Sequence[Observation]) -> list[str]:
     codes = []
-    verdict = _latest_verdict(observations)
+    verdict = latest_verdict(observations)
     if not (
         verdict is not None
         and verdict.get("status") == "ELIGIBLE"
@@ -129,7 +129,7 @@ def _check_approve(answer: FinalAnswer, observations: Sequence[Observation]) -> 
 
 def _check_deny(answer: FinalAnswer, observations: Sequence[Observation]) -> list[str]:
     codes = []
-    verdict = _latest_verdict(observations)
+    verdict = latest_verdict(observations)
     if not (
         verdict is not None
         and verdict.get("status") == "NOT_ELIGIBLE"

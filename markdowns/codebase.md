@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-25, milestone M7 in progress (failing tests for the deterministic half of reflection, `agent/reflection.py`, and the reflection prompt). M1 to M6 are verified.
+**Last updated:** 2026-11-25, milestone M7 in progress (the deterministic half of reflection in `agent/reflection.py`, the `reflection_verdict` tool and the reflection prompt; the model's reflection call is next). M1 to M6 are verified.
 
 ---
 
@@ -34,7 +34,8 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 | `src/it_requests/agent/tools.py` | `with_thought`, `FINAL_ANSWER_TOOL`, `strip_thought`, `parse_final_answer`: the ReAct tool definitions. | Unit-tested on the real server schemas, 100% coverage |
 | `src/it_requests/agent/loop.py` | `run_agent`: the ReAct loop, with guards, the step cap and the E11 fallback. `AgentRequest`, `AgentResult`, `Step`, `GuardEvent`. | 81 integration tests with the fake model and the real in-process server, 99% coverage; one live twin (`tests/live`, paid, opt-in) |
 | `src/it_requests/agent/trace_format.py` | `format_trace`: the printed Thought / Action / Observation / Final Answer trace. Pure. | Unit-tested, 100% coverage |
-| `src/it_requests/agent/prompts.py` | `PROMPT_VERSION` (`m6-v1`), `SYSTEM_PROMPT_SINGLE_CALL` (M5) and `SYSTEM_PROMPT_REACT` (rules copied from REQUIREMENTS §5, §6, §6.1, §10, plus the working method). | `test_prompts.py` checks every code, constraint and key tool name, and no per-request content |
+| `src/it_requests/agent/prompts.py` | `PROMPT_VERSION` (`m7-v1`), `SYSTEM_PROMPT_SINGLE_CALL` (M5), `SYSTEM_PROMPT_REACT` (rules copied from REQUIREMENTS §5, §6, §6.1, §10, plus the working method) and `SYSTEM_PROMPT_REFLECTION` (the six §11 questions word for word, C4, C5, the reply-only rule). | `test_prompts.py` checks every code, constraint, §11 question and key tool name, and no per-request content |
+| `src/it_requests/agent/reflection.py` | The deterministic half of reflection: `code_findings`, `unsupported_dates`, `remove_sentences_with`, `REFLECTION_TOOL`, `ReflectionVerdict`, `parse_verdict`. Pure. | Unit-tested with observations from the real tool functions, 100% coverage |
 | `src/it_requests/agent/mcp_bridge.py` | `MCPToolClient` protocol, `to_claude_tools` (MCP tool list to Claude tool definitions) and `call_tool` (one tool call with `request_id` and `traceparent` in `_meta`), plus the shared span helpers `traceparent` and `span_safe_arguments`. | Tested, 100% coverage |
 | `src/it_requests/agent/single_call.py` | `run_single_tool_call`: one model call, then the one tool call Claude picks, run on the server, inside an `agent.run` trace. | Integration-tested with the fake and the in-process server, 100% coverage |
 | `src/it_requests/agent/guards.py` | `check_tool_call` (C6, C7 before a call), `check_final_answer` (C1, C2, C3, required calls, C7 on the answer) and `violation_message`. Pure. | Unit-tested against results from the real tool functions, 100% coverage |
@@ -224,6 +225,17 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 
 - **`format_trace(result)`:** `Thought:`, `Action: tool({json})` and `Observation: {full result}` per step, a `GUARD: blocked <tool> (<codes>)` line after the step it followed, the final thought, then `Final Answer: APPROVE (rule R-NEW)` or `ESCALATE (E6, review REV-0001)` (labelled `Final Answer (fallback)` on a fallback) and `Reply:`. The full observation is fine here: this text is printed for the graded trace, not logged.
 
+### `agent/reflection.py` in detail
+
+- **`code_findings(answer, observations)`:** returns codes in `CODE_FINDINGS` order:
+  - `C4_UNSUPPORTED_DATE`: a `YYYY-MM-DD` in the reply that appears in the JSON text of no successful observation. Error results support nothing.
+  - `DENY_MISSING_NEXT_DATE`: a denial whose latest successful eligibility result (`guards.latest_verdict`) has a `next_eligible_date` that the reply leaves out (§11 q4).
+  - `ESCALATE_MISSING_REVIEW_ID`: an escalation whose reply doesn't cite `review_id` (§11 q5; the C3 guard already blocks this).
+- **`unsupported_dates(reply, observations)`:** the dates behind C4, in order of appearance, without duplicates.
+- **`remove_sentences_with(reply, tokens)`:** splits on `. `, `! `, `? ` and newlines (so `$1.50` stays whole), drops each sentence that holds a token along with its separator, and returns the rest stripped.
+- **`REFLECTION_TOOL`:** `reflection_verdict`, strict. `thought`, `answers` (`q1` to `q6`, each a required boolean), `verdict` (`CONFIRMED` or `REVISED`), and `revised_reply` and `what_changed` (string or null). Every property is required.
+- **`parse_verdict(tool_input)`:** returns a `ReflectionVerdict` (with a copy of `answers`), or raises `ValueError` on any shape problem, a `REVISED` verdict with a null or blank reply, or a `CONFIRMED` verdict that carries a reply.
+
 ### `cost_report.py` in detail
 
 - **`summarise(entries, *, budget)`:** pure. Returns a `CostSummary` with `total`, `calls`, `by_env`, `by_stage`, `by_request`, `budget` and `remaining`. A missing key is grouped under `"unknown"`. `remaining` can be negative, so an overspend shows.
@@ -293,6 +305,7 @@ Build-MCP/
 │   │   ├── guards.py       # C1-C3, C6, C7 and required-call checks (pure)
 │   │   ├── loop.py         # run_agent: the ReAct loop, guards, step cap, E11 fallback
 │   │   ├── tools.py        # thought on every tool, final_answer, parse helpers
+│   │   ├── reflection.py   # code checks on the draft, the reflection_verdict tool
 │   │   ├── trace_format.py # the printed Thought/Action/Observation trace
 │   │   ├── mcp_bridge.py   # MCP tools to Claude tool definitions; call one tool
 │   │   └── single_call.py  # run_single_tool_call (brief step 5a)
@@ -306,7 +319,7 @@ Build-MCP/
 │   └── policy.json         # role entitlements (REQUIREMENTS §4.1)
 ├── tests/
 │   ├── conftest.py         # FakeMessages: a fake Anthropic messages API (real SDK types)
-│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report, test_guards, test_tools, test_prompts, test_trace_format, test_evals, test_reflection (M7, red), test_test_style (AAA style guard)
+│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report, test_guards, test_tools, test_prompts, test_trace_format, test_evals, test_reflection, test_test_style (AAA style guard)
 │   ├── integration/        # conftest (server, server_log, call_tool, listed_tools, tool_call_records), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools, test_agent_single_call, test_agent_loop, test_server_meta
 │   └── live/               # test_real_agent: one PAID T1 run on Haiku (slow, eval); `make test-live` only
 ├── scripts/
@@ -681,6 +694,15 @@ Each entry: the decision, and why.
 97. **`run_eval.py` asks before spending and checks the budget gate before every run.**
     *Why:* a 12-run Sonnet eval costs about $1 (estimate), a quarter of the budget. The prompt keeps a human in the loop, and a per-run gate stops cleanly with the results so far on disk.
 
+98. **Reflection is split: code checks what it can, the model judges the rest.**
+    *Why:* invented dates, a missing next date and a missing review ID can be checked exactly, with no cost and no variation between runs. The model's pass is kept for what code can't judge (C5 promises, whether every item was answered), and is told to fix the code findings.
+
+99. **A date counts as supported if it appears anywhere in a successful result's JSON text.**
+    *Why:* dates live in nested fields (`equipment[].issued_date`, `next_eligible_date`, `as_of`). Searching the text needs no list of date fields to keep in step with the tools.
+
+100. **`parse_verdict` rejects a `CONFIRMED` verdict that carries a revised reply.**
+    *Why:* the two contradict each other, so neither can be trusted. The caller then keeps the original draft, which the guards have already accepted.
+
 ## 6. Change log
 
 | Date | Milestone | Change | Why |
@@ -732,6 +754,7 @@ Each entry: the decision, and why.
 | 2026-11-24 | M6 | `evals/cases.json` (T1 to T12, `cases-v1`); failing tests for the eval helpers (`test_evals.py`) and for the server logging `request_id` from `_meta` (`test_server_meta.py`) | TDD red step |
 | 2026-11-24 | M6 | `evals.py`; `server.py` reads `request_id` from `_meta`; `guards.cites` made public; `scripts/run_agent.py`, `scripts/run_eval.py`; `make agent` and `make eval` | Live runs with a printed trace, a graded eval, and server logs joined to the agent's `request_id` |
 | 2026-11-25 | M7 | Failing tests for the deterministic reflection checks, the `reflection_verdict` tool and `parse_verdict` (`test_reflection.py`), and for `SYSTEM_PROMPT_REFLECTION` and `PROMPT_VERSION` `m7-v1` (`test_prompts.py`) | TDD red step |
+| 2026-11-25 | M7 | `agent/reflection.py`; `SYSTEM_PROMPT_REFLECTION` and `PROMPT_VERSION` `m7-v1` in `agent/prompts.py`; `guards.latest_verdict` made public | The deterministic half of reflection, ready for the model's reflection call |
 
 ## 7. Known issues and fixes
 

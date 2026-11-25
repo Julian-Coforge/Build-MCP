@@ -126,8 +126,9 @@ def test_code_findings_date_from_nested_observation_is_not_flagged() -> None:
 
 def test_code_findings_date_only_in_a_failed_observation_is_flagged() -> None:
     # Hand-built: an error result is not data, so a date inside it supports nothing.
-    failed = Observation("check_request_eligibility", {}, {"error": "X", "as_of": "2026-11-22"})
-    reply = f"{CLEAN_DENY_REPLY} Checked on 2026-11-22."
+    # 2026-01-15 is in no successful result (the real ones hold as_of 2026-11-22).
+    failed = Observation("check_request_eligibility", {}, {"error": "X", "as_of": "2026-01-15"})
+    reply = f"{CLEAN_DENY_REPLY} Checked on 2026-01-15."
 
     assert code_findings(_deny(reply), [*DENY_OBSERVATIONS, failed]) == ["C4_UNSUPPORTED_DATE"]
 

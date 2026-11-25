@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-25, milestone M7 in progress (the deterministic half of reflection in `agent/reflection.py`, the `reflection_verdict` tool and the reflection prompt; the model's reflection call is next). M1 to M6 are verified.
+**Last updated:** 2026-11-25, milestone M7 in progress (the deterministic half of reflection in `agent/reflection.py`, the `reflection_verdict` tool and the reflection prompt; failing tests for `Reflector.reflect`, the model's reflection call). M1 to M6 are verified.
 
 ---
 
@@ -755,6 +755,7 @@ Each entry: the decision, and why.
 | 2026-11-24 | M6 | `evals.py`; `server.py` reads `request_id` from `_meta`; `guards.cites` made public; `scripts/run_agent.py`, `scripts/run_eval.py`; `make agent` and `make eval` | Live runs with a printed trace, a graded eval, and server logs joined to the agent's `request_id` |
 | 2026-11-25 | M7 | Failing tests for the deterministic reflection checks, the `reflection_verdict` tool and `parse_verdict` (`test_reflection.py`), and for `SYSTEM_PROMPT_REFLECTION` and `PROMPT_VERSION` `m7-v1` (`test_prompts.py`) | TDD red step |
 | 2026-11-25 | M7 | `agent/reflection.py`; `SYSTEM_PROMPT_REFLECTION` and `PROMPT_VERSION` `m7-v1` in `agent/prompts.py`; `guards.latest_verdict` made public | The deterministic half of reflection, ready for the model's reflection call |
+| 2026-11-25 | M7 | Failing tests for `Reflector.reflect` and `ReflectionResult` (`test_reflection.py`): verdict handling, the copy rule, discarded revisions, code-made date removal, unparsed output, the ledger, span and logs | TDD red step |
 
 ## 7. Known issues and fixes
 

@@ -1,21 +1,36 @@
-"""Tests for the deterministic half of reflection (REQUIREMENTS §6.1 C4, §11; PLAN §2).
+"""Tests for reflection (REQUIREMENTS §6.1 C4, §11; PLAN §2): code checks and the Reflector.
 
 Observations come from the real pure tool functions, as in test_guards.py, so the date
-search runs over the exact JSON the server returns.
+search runs over the exact JSON the server returns. The Reflector runs over FakeMessages
+and a temporary ledger: nothing calls the paid API.
 """
 
+import io
+import itertools
+import json
+import logging
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
+from anthropic.types import Message
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from it_requests import config
 from it_requests.agent.guards import FinalAnswer, Observation
+from it_requests.agent.llm import LLMClient, system_blocks
+from it_requests.agent.prompts import SYSTEM_PROMPT_REFLECTION
 from it_requests.agent.reflection import (
     CODE_FINDINGS,
     REFLECTION_TOOL,
+    ReflectionResult,
     ReflectionVerdict,
+    Reflector,
     code_findings,
     parse_verdict,
     remove_sentences_with,
@@ -24,6 +39,7 @@ from it_requests.agent.reflection import (
 from it_requests.data import load_employees, load_policy
 from it_requests.eligibility import check_request_eligibility
 from it_requests.employees import get_employee_info
+from it_requests.observability import JsonFormatter
 from it_requests.reviews import flag_for_human_review
 
 DIRECTORY = load_employees(config.EMPLOYEES_FILE)
@@ -402,3 +418,398 @@ def test_parse_verdict_does_not_mutate_input() -> None:
 def test_parse_verdict_malformed_input_raises(bad: dict[str, Any]) -> None:
     with pytest.raises(ValueError):
         parse_verdict(bad)
+
+
+# ---------- Reflector ----------
+
+REQUEST_TEXT = "This is Priya, E1001. My laptop feels slow lately, can I get a new one?"
+# A guard-safe rewrite of the clean denial: still cites R-REFRESH and the next date.
+SAFE_REVISION = (
+    "Your laptop is not due for refresh until 2028-03-10 (rule R-REFRESH). "
+    "The IT helpdesk can help with performance."
+)
+SAFE_CHANGE = "Added a next step for the slow laptop."
+# Drops the rule ID, so check_final_answer rejects it with C2.
+UNSAFE_REVISION = "Your laptop is not due for refresh until 2028-03-10."
+DRAFT_WITH_INVENTED_DATE = f"{CLEAN_DENY_REPLY} A new one will arrive by {INVENTED_DATE}."
+# Leaves out next_eligible_date (2028-03-10), which no model verdict below adds.
+DRAFT_MISSING_NEXT_DATE = "Your laptop is not due for refresh yet (rule R-REFRESH)."
+
+
+@dataclass
+class _Env:
+    """A Reflector over FakeMessages, plus everything it writes, read back for one assert."""
+
+    reflector: Reflector
+    fake: Any
+    make_message: Callable[..., Message]
+    spans: InMemorySpanExporter
+    log: io.StringIO
+    ledger_path: Path
+
+    def queue_verdict(self, **overrides: Any) -> None:
+        tool_input = CONFIRMED_INPUT | overrides
+        self.fake.queue(self.make_message(tool_uses=[("reflection_verdict", tool_input)]))
+
+    def queue_revised(self, **overrides: Any) -> None:
+        tool_input = REVISED_INPUT | {"revised_reply": SAFE_REVISION, "what_changed": SAFE_CHANGE}
+        self.fake.queue(
+            self.make_message(tool_uses=[("reflection_verdict", tool_input | overrides)])
+        )
+
+    def reflect(self, answer: FinalAnswer) -> ReflectionResult:
+        return self.reflector.reflect(
+            request_id="REQ-0002",
+            run_id="run-1",
+            request_text=REQUEST_TEXT,
+            answer=answer,
+            observations=DENY_OBSERVATIONS,
+        )
+
+    def records(self, event: str) -> list[dict[str, Any]]:
+        lines = [json.loads(line) for line in self.log.getvalue().splitlines()]
+        return [r for r in lines if r["event"] == event]
+
+    def span(self, name: str) -> ReadableSpan:
+        return next(s for s in self.spans.get_finished_spans() if s.name == name)
+
+    def sent(self) -> dict[str, Any]:
+        call: dict[str, Any] = self.fake.calls[0]
+        return call
+
+    def user_message(self) -> str:
+        content: str = self.sent()["messages"][0]["content"]
+        return content
+
+
+@pytest.fixture
+def env(
+    tmp_path: Path,
+    fake_messages: Any,
+    make_message: Callable[..., Message],
+    request: pytest.FixtureRequest,
+) -> _Env:
+    spans = InMemorySpanExporter()
+    provider = TracerProvider()  # local, never global
+    provider.add_span_processor(SimpleSpanProcessor(spans))
+    log = io.StringIO()
+    handler = logging.StreamHandler(log)
+    handler.setFormatter(JsonFormatter())
+    logger = logging.getLogger(f"test.reflection.{request.node.name}")
+    logger.handlers = [handler]
+    logger.setLevel(logging.DEBUG)  # DEBUG on, to prove the reply stays out of INFO lines
+    logger.propagate = False
+    ledger_path = tmp_path / "logs" / "cost_ledger.jsonl"  # never the real logs/
+    ticks = itertools.count(0.0, 0.25)
+    llm = LLMClient(
+        create=fake_messages.create,
+        model=config.DEV_MODEL,
+        env="dev",
+        ledger_path=ledger_path,
+        tracer=provider.get_tracer("test"),
+        logger=logger,
+        clock=lambda: next(ticks),
+    )
+    reflector = Reflector(llm=llm, tracer=provider.get_tracer("test"), logger=logger)
+    return _Env(reflector, fake_messages, make_message, spans, log, ledger_path)
+
+
+# ---------- Reflector: CONFIRMED ----------
+
+
+def test_reflect_confirmed_clean_draft_returns_confirmed(env: _Env) -> None:
+    env.queue_verdict()
+
+    result = env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert result.status == "CONFIRMED"
+
+
+def test_reflect_confirmed_clean_draft_returns_answer_unchanged(env: _Env) -> None:
+    answer = _deny(CLEAN_DENY_REPLY)
+    env.queue_verdict()
+
+    result = env.reflect(answer)
+
+    assert result.final == answer
+
+
+def test_reflect_confirmed_clean_draft_records_no_changes(env: _Env) -> None:
+    env.queue_verdict()
+
+    result = env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert result.changes == ()
+
+
+def test_reflect_keeps_the_draft_reply_before_reflection(env: _Env) -> None:
+    env.queue_revised()
+
+    result = env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert result.draft_reply == CLEAN_DENY_REPLY
+
+
+def test_reflect_returns_the_model_answers(env: _Env) -> None:
+    env.queue_verdict()
+
+    result = env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert result.answers == ALL_YES
+
+
+# ---------- Reflector: REVISED by the model ----------
+
+
+def test_reflect_guard_safe_revision_returns_revised(env: _Env) -> None:
+    env.queue_revised()
+
+    result = env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert result.status == "REVISED"
+
+
+def test_reflect_guard_safe_revision_uses_the_revised_reply(env: _Env) -> None:
+    env.queue_revised()
+
+    result = env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert result.final.draft_reply == SAFE_REVISION
+
+
+def test_reflect_guard_safe_revision_records_what_changed(env: _Env) -> None:
+    env.queue_revised()
+
+    result = env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert result.changes == (SAFE_CHANGE,)
+
+
+def test_reflect_revision_cannot_change_the_decision(env: _Env) -> None:
+    # The schema has no decision field; a model that sends one anyway is ignored.
+    env.queue_revised(decision="approve", rule_id="R-NEW")
+
+    result = env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert (result.final.decision, result.final.rule_id) == ("deny", "R-REFRESH")
+
+
+# ---------- Reflector: revision discarded ----------
+
+
+def test_reflect_revision_failing_the_guards_is_discarded(env: _Env) -> None:
+    env.queue_revised(revised_reply=UNSAFE_REVISION)
+
+    result = env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert result.final.draft_reply == CLEAN_DENY_REPLY
+
+
+def test_reflect_discarded_revision_gives_confirmed(env: _Env) -> None:
+    env.queue_revised(revised_reply=UNSAFE_REVISION)
+
+    result = env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert result.status == "CONFIRMED"
+
+
+def test_reflect_discarded_revision_logs_the_guard_codes(env: _Env) -> None:
+    env.queue_revised(revised_reply=UNSAFE_REVISION)
+
+    env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert [(r["level"], r["codes"]) for r in env.records("reflection.revision_discarded")] == [
+        ("WARNING", ["C2"])
+    ]
+
+
+# ---------- Reflector: code-made fixes ----------
+
+
+def test_reflect_code_removes_an_unsupported_date_the_model_missed(env: _Env) -> None:
+    env.queue_verdict()  # the model says CONFIRMED despite the invented date
+
+    result = env.reflect(_deny(DRAFT_WITH_INVENTED_DATE))
+
+    assert result.final.draft_reply == CLEAN_DENY_REPLY
+
+
+def test_reflect_code_removed_date_gives_revised(env: _Env) -> None:
+    env.queue_verdict()
+
+    result = env.reflect(_deny(DRAFT_WITH_INVENTED_DATE))
+
+    assert result.status == "REVISED"
+
+
+def test_reflect_code_removed_date_is_named_in_changes(env: _Env) -> None:
+    env.queue_verdict()
+
+    result = env.reflect(_deny(DRAFT_WITH_INVENTED_DATE))
+
+    assert result.changes == (f"removed unsupported date {INVENTED_DATE}",)
+
+
+def test_reflect_model_and_code_changes_are_both_recorded(env: _Env) -> None:
+    # The model's own revision adds an invented date; the code then removes that sentence.
+    env.queue_revised(revised_reply=f"{SAFE_REVISION} It ships by {INVENTED_DATE}.")
+
+    result = env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert result.changes == (SAFE_CHANGE, f"removed unsupported date {INVENTED_DATE}")
+
+
+def test_reflect_unresolved_finding_is_logged(env: _Env) -> None:
+    env.queue_verdict()
+
+    env.reflect(_deny(DRAFT_MISSING_NEXT_DATE))
+
+    assert [(r["level"], r["findings"]) for r in env.records("reflection.unresolved")] == [
+        ("WARNING", ["DENY_MISSING_NEXT_DATE"])
+    ]
+
+
+# ---------- Reflector: unusable model output ----------
+
+
+def test_reflect_no_tool_use_is_treated_as_confirmed(env: _Env) -> None:
+    env.fake.queue(env.make_message(tool_name=None, text="Looks fine.", stop_reason="end_turn"))
+
+    result = env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert result.status == "CONFIRMED"
+
+
+def test_reflect_no_tool_use_logs_one_unparsed_warning(env: _Env) -> None:
+    env.fake.queue(env.make_message(tool_name=None, text="Looks fine.", stop_reason="end_turn"))
+
+    env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert [r["level"] for r in env.records("reflection.unparsed")] == ["WARNING"]
+
+
+def test_reflect_malformed_verdict_is_treated_as_confirmed(env: _Env) -> None:
+    env.queue_verdict(verdict="REVISED", revised_reply=None)
+
+    result = env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert result.final.draft_reply == CLEAN_DENY_REPLY
+
+
+def test_reflect_unparsed_verdict_has_no_answers(env: _Env) -> None:
+    env.fake.queue(env.make_message(tool_name=None, text="Looks fine.", stop_reason="end_turn"))
+
+    result = env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert result.answers is None
+
+
+def test_reflect_unparsed_verdict_still_runs_the_code_checks(env: _Env) -> None:
+    env.fake.queue(env.make_message(tool_name=None, text="Looks fine.", stop_reason="end_turn"))
+
+    result = env.reflect(_deny(DRAFT_WITH_INVENTED_DATE))
+
+    assert result.final.draft_reply == CLEAN_DENY_REPLY
+
+
+# ---------- Reflector: the model call ----------
+
+
+def test_reflect_makes_exactly_one_model_call(env: _Env) -> None:
+    env.queue_verdict()
+
+    env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert len(env.fake.calls) == 1
+
+
+def test_reflect_ledger_line_has_stage_reflection(env: _Env) -> None:
+    env.queue_verdict()
+
+    env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert [json.loads(line)["stage"] for line in env.ledger_path.read_text().splitlines()] == [
+        "reflection"
+    ]
+
+
+def test_reflect_sends_the_cached_reflection_system_prompt(env: _Env) -> None:
+    env.queue_verdict()
+
+    env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert env.sent()["system"] == system_blocks(SYSTEM_PROMPT_REFLECTION)
+
+
+def test_reflect_offers_only_the_verdict_tool(env: _Env) -> None:
+    env.queue_verdict()
+
+    env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert env.sent()["tools"] == [REFLECTION_TOOL]
+
+
+@pytest.mark.parametrize(
+    "expected",
+    [REQUEST_TEXT, '"next_eligible_date": "2028-03-10"', CLEAN_DENY_REPLY, "R-REFRESH"],
+    ids=["request-text", "observation-json", "draft-reply", "rule-id"],
+)
+def test_reflect_user_message_holds_the_review_material(env: _Env, expected: str) -> None:
+    env.queue_verdict()
+
+    env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert expected in env.user_message()
+
+
+def test_reflect_user_message_lists_the_code_findings(env: _Env) -> None:
+    env.queue_verdict()
+
+    env.reflect(_deny(DRAFT_WITH_INVENTED_DATE))
+
+    assert "C4_UNSUPPORTED_DATE" in env.user_message()
+
+
+# ---------- Reflector: span and logs ----------
+
+
+def test_reflect_span_is_parent_of_the_llm_call(env: _Env) -> None:
+    env.queue_verdict()
+
+    env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert env.span("llm.call").parent.span_id == env.span("reflection").context.span_id  # type: ignore[union-attr]
+
+
+def test_reflect_span_records_the_result(env: _Env) -> None:
+    env.queue_verdict()
+
+    env.reflect(_deny(DRAFT_WITH_INVENTED_DATE))
+
+    assert dict(env.span("reflection").attributes or {})["result"] == "REVISED"
+
+
+def test_reflect_span_records_the_findings(env: _Env) -> None:
+    env.queue_verdict()
+
+    env.reflect(_deny(DRAFT_WITH_INVENTED_DATE))
+
+    assert dict(env.span("reflection").attributes or {})["findings"] == ("C4_UNSUPPORTED_DATE",)
+
+
+def test_reflect_result_log_carries_status_and_changes(env: _Env) -> None:
+    env.queue_verdict()
+
+    env.reflect(_deny(DRAFT_WITH_INVENTED_DATE))
+
+    assert [(r["status"], r["changes"]) for r in env.records("reflection.result")] == [
+        ("REVISED", [f"removed unsupported date {INVENTED_DATE}"])
+    ]
+
+
+def test_reflect_result_log_has_no_reply_text(env: _Env) -> None:
+    env.queue_revised()
+
+    env.reflect(_deny(CLEAN_DENY_REPLY))
+
+    assert SAFE_REVISION not in json.dumps(env.records("reflection.result"))

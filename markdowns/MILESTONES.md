@@ -3,7 +3,7 @@
 > Where the project is right now. Updated as each item is finished.
 > Details for each milestone are in `PLAN.md` §13; what the code does is in `codebase.md`.
 
-**Current stage:** M5 verified (live Haiku run cost $0.000143). Push and merge M5, then **M6** (the full ReAct loop).
+**Current stage:** M6 verified and merged (Sonnet eval 12/12). Put #5 to #7 in the LaTeX, then **M7** (reflection).
 **Due:** 2026-11-26 · **LLM spend so far:** $0.00 of the $5 budget (code gate at $4.00)
 
 Legend: `[x]` done · `[ ]` not done · 📸 = screenshot for the submission PDF (number = deliverable order)
@@ -58,10 +58,10 @@ Legend: `[x]` done · `[ ]` not done · 📸 = screenshot for the submission PDF
 - [x] One live call on a hardcoded request (Haiku); cost line and trace file appear
 
 ## M6: Full ReAct loop and guards (brief step 5b, Part 4)
-- [ ] Each Action carries a `thought` field; `final_answer` tool with a strict schema
-- [ ] Step cap (C6) and guards C1, C2, C3, C7, tested with a scripted fake LLM
-- [ ] Trace prints Thought, Action, Observation, then Final Answer
-- [ ] Live eval: T1 to T4 correct in 3 out of 3 runs each (Sonnet)
+- [x] Each Action carries a `thought` field; `final_answer` tool with a strict schema
+- [x] Step cap (C6) and guards C1, C2, C3, C7, tested with a scripted fake LLM
+- [x] Trace prints Thought, Action, Observation, then Final Answer
+- [x] Live eval: T1 to T4 correct in 3 out of 3 runs each (Sonnet)
 - [ ] 📸 **#5** Agent code, including the MCP client connection
 - [ ] 📸 **#6** Full ReAct traces for all 4 test requests
 - [ ] 📸 **#7** Final decision and reply for each of the 4 requests, including escalation reasons

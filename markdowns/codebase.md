@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-24, milestone M6 in progress (the ReAct loop `run_agent` with guards, step cap and E11 fallback, and the printed trace `format_trace`; tested with the fake model only). Eval cases T1 to T12, grading, `scripts/run_agent.py` and `scripts/run_eval.py` are ready but not yet run (paid). The server now logs the agent's `request_id` from `_meta`. M1 to M5 are verified.
+**Last updated:** 2026-11-25, milestone M6 (the ReAct loop, guards C1 to C3, C6 and C7, eval cases and live Sonnet results). M1 to M6 are verified.
 
 ---
 
@@ -798,4 +798,19 @@ Checked by the main Claude session on a copy of branch `m5-agent-single-call` at
 **Known gaps (not blocking):**
 - ~~The server logs `request_id: null`.~~ Fixed in M6: each tool reads `request_id` from `_meta` (`test_server_meta.py`).
 - `cost_report` rounds to 4 decimal places, so a Haiku run shows as $0.0001. Showing 6 decimals would make dev spend readable.
+
+### 7.8 M6 verification (2026-11-25)
+
+Checked by the main Claude session on a copy of branch `m6-react-loop` at `8920c66` (merged as PR #7), Python 3.14.6:
+- `ruff format --check`, `ruff check`, `mypy --strict` and `pip-audit` all pass.
+- 426 unit tests and 70 integration tests pass. Coverage is 99%. Every agent module is at 100% except `loop.py` (99%, one partial branch).
+- Each of the four steps has a red commit before its green commit.
+
+**Live runs:**
+- *Haiku dry runs (dev):* T1 to T4 each gave the expected decision. In T4, the first `final_answer` was blocked by C3 and the corrected answer passed. That shows the guard working on a real model.
+- *Sonnet eval (`evals/results/20261124T213305Z-claude-sonnet-5-5.jsonl`):* **12 of 12 passed**, so T1 to T4 were each 3 out of 3. T1 approved under R-NEW, T2 denied under R-REFRESH, T3 escalated as E6 and T4 as E9. There were no guard events and no fallbacks, and exactly one review ticket per escalation. The eval cost $0.150 (about $0.0125 per run, against the $0.085 estimate in PLAN §4), because prompt caching made every step after the first cheap.
+- *Sonnet demo runs (env `demo`):* `traces/T1.txt` to `traces/T4.txt`, the source for deliverables #6 and #7. The review queue wasn't reset first, so the demo tickets are REV-0007 and REV-0008. That's harmless: each reply quotes the ID it was given.
+- **Total project spend after M6: $0.209 of the $4.00 budget.**
+
+**Deliverables:** #5, #6 and #7 are LaTeX listings and verbatim blocks taken from the code and the four trace files (Julian's choice, recorded in project memory).
 

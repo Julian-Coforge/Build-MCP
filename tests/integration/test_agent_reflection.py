@@ -93,6 +93,16 @@ RULELESS_REWRITE = "Your laptop is not due for refresh until 2028-03-10."
 FAULT_LABEL = "[FAULT INJECTED: demo run, a delivery promise was added to the draft]"
 
 
+class _ExplodingMCP:
+    """An MCP client that must never be used: the argument check comes first."""
+
+    async def list_tools(self) -> Any:
+        raise AssertionError("run_agent must refuse inject_fault before touching MCP")
+
+    async def call_tool(self, name: str, arguments: dict[str, Any], *, meta: dict[str, Any]) -> Any:
+        raise AssertionError("run_agent must refuse inject_fault before touching MCP")
+
+
 class Harness:
     """Scripts the model's turns, runs the agent once, and reads back what it wrote."""
 
@@ -146,6 +156,32 @@ class Harness:
         finally:
             provider.shutdown()  # flush the trace file
 
+    async def run_unconnected(self, *, inject_fault: bool) -> AgentResult:
+        # No `async with Client`: its task group would wrap an early error in an
+        # ExceptionGroup, hiding the plain ValueError the caller actually gets.
+        tracer, provider = make_tracer(self.trace_path)
+        llm = LLMClient(
+            create=self.fake.create,
+            model=config.DEV_MODEL,
+            env="dev",
+            ledger_path=self.ledger_path,
+            tracer=tracer,
+            logger=self.logger,
+            clock=lambda: 0.0,
+        )
+        try:
+            return await run_agent(
+                AgentRequest(request_id=REQUEST_ID, request_text=T1_TEXT),
+                llm=llm,
+                mcp_client=_ExplodingMCP(),
+                tracer=tracer,
+                logger=self.logger,
+                reflector=None,
+                inject_fault=inject_fault,
+            )
+        finally:
+            provider.shutdown()
+
     @property
     def calls(self) -> list[dict[str, Any]]:
         return list(self.fake.calls)
@@ -153,6 +189,10 @@ class Harness:
     def ledger_stages(self) -> list[str]:
         lines = self.ledger_path.read_text().splitlines()
         return [json.loads(line)["stage"] for line in lines]
+
+    def ledger_total(self) -> float:
+        lines = self.ledger_path.read_text().splitlines()
+        return float(sum(json.loads(line)["cost_usd"] for line in lines))
 
     def spans(self) -> list[dict[str, Any]]:
         return [json.loads(line) for line in self.trace_path.read_text().splitlines()]
@@ -273,6 +313,19 @@ async def test_reflection_t1_confirmed_is_not_marked_fault_injected(h: Harness) 
     result = await _t1_confirmed(h)
 
     assert result.fault_injected is False
+
+
+async def test_reflection_run_cost_includes_the_reflection_call(h: Harness) -> None:
+    # Run totals must match the ledger, reflection line included (PLAN §4).
+    result = await _t1_confirmed(h)
+
+    assert result.cost_usd == pytest.approx(h.ledger_total())
+
+
+async def test_reflection_root_span_total_includes_the_reflection_call(h: Harness) -> None:
+    await _t1_confirmed(h)
+
+    assert h.span("agent.run")["attributes"]["total_cost_usd"] == pytest.approx(h.ledger_total())
 
 
 async def test_reflection_run_end_logs_the_reflection_status(h: Harness) -> None:
@@ -452,4 +505,4 @@ async def test_no_reflector_run_end_logs_no_reflection(h: Harness) -> None:
 
 async def test_inject_fault_without_reflector_raises(h: Harness) -> None:
     with pytest.raises(ValueError, match="reflector"):
-        await h.run(reflect=False, inject_fault=True)
+        await h.run_unconnected(inject_fault=True)

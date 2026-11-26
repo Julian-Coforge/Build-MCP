@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-25, milestone M7 in progress (the deterministic half of reflection in `agent/reflection.py`, the `reflection_verdict` tool, the reflection prompt and `Reflector.reflect`, the model's reflection call; failing tests for wiring reflection into `run_agent` and the labelled `--inject-fault` demo). M1 to M6 are verified.
+**Last updated:** 2026-11-25, milestone M7 in progress (the deterministic half of reflection in `agent/reflection.py`, the `reflection_verdict` tool, the reflection prompt and `Reflector.reflect`, wired into `run_agent` with the labelled fault-injection option; the live scripts don't pass a reflector or `--inject-fault` yet). M1 to M6 are verified.
 
 ---
 
@@ -32,7 +32,7 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 | `src/it_requests/agent/costs.py` | `cost_usd`, `ledger_total`, `check_budget` and `budget_from_env`, with `UnknownModelError`, `LedgerCorruptError` and `BudgetExceededError`: pure cost maths and the budget gate (PLAN §4). | Tested, 100% coverage; not yet called by any component |
 | `src/it_requests/agent/llm.py` | `LLMClient` (the one wrapper for paid model calls) and the `CreateMessage` protocol. Each call writes a cost-ledger line, an `llm.call` span and an `llm.call` log line. | Tested with a fake, 100% coverage; used by `single_call.py` |
 | `src/it_requests/agent/tools.py` | `with_thought`, `FINAL_ANSWER_TOOL`, `strip_thought`, `parse_final_answer`: the ReAct tool definitions. | Unit-tested on the real server schemas, 100% coverage |
-| `src/it_requests/agent/loop.py` | `run_agent`: the ReAct loop, with guards, the step cap and the E11 fallback. `AgentRequest`, `AgentResult`, `Step`, `GuardEvent`. | 81 integration tests with the fake model and the real in-process server, 99% coverage; one live twin (`tests/live`, paid, opt-in) |
+| `src/it_requests/agent/loop.py` | `run_agent`: the ReAct loop, with guards, the step cap, the E11 fallback, and reflection on every accepted answer (optional `reflector`, `inject_fault`). `AgentRequest`, `AgentResult`, `Step`, `GuardEvent`. | 81 integration tests with the fake model and the real in-process server, 99% coverage; one live twin (`tests/live`, paid, opt-in) |
 | `src/it_requests/agent/trace_format.py` | `format_trace`: the printed Thought / Action / Observation / Final Answer trace. Pure. | Unit-tested, 100% coverage |
 | `src/it_requests/agent/prompts.py` | `PROMPT_VERSION` (`m7-v1`), `SYSTEM_PROMPT_SINGLE_CALL` (M5), `SYSTEM_PROMPT_REACT` (rules copied from REQUIREMENTS §5, §6, §6.1, §10, plus the working method) and `SYSTEM_PROMPT_REFLECTION` (the six §11 questions word for word, C4, C5, the reply-only rule). | `test_prompts.py` checks every code, constraint, §11 question and key tool name, and no per-request content |
 | `src/it_requests/agent/reflection.py` | The deterministic half of reflection: `code_findings`, `unsupported_dates`, `remove_sentences_with`, `REFLECTION_TOOL`, `ReflectionVerdict`, `parse_verdict` (pure), and `Reflector` / `ReflectionResult` (one model call, stage `reflection`). | Unit-tested with observations from the real tool functions and FakeMessages, 100% coverage |
@@ -219,11 +219,12 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
   - **No tool_use:** the reply is `"Call final_answer to finish."`, which counts as a model call.
 - **Fallback (E11), run by the code:** the model-call limit, a second rejected final answer, or a turn after a C6 block that doesn't call `flag_for_human_review`. If a ticket exists, it is reused with its own code (C7). Otherwise the code flags with `"E11: <why>."`, using the last `employee_id` argument, else the first `E####` in the request text, else `UNKNOWN`. The reply is fixed text with the `review_id`. `agent.fallback` is logged at WARN.
 - **Spans:** `agent.run` (request_id, run_id, prompt_version, model; at the end decision, rule_id or reason_code, review_id, fallback, total_cost_usd, total_tokens), with `llm.call` and `tool.*` children. Tool spans carry the redacted arguments, `result_status` and `data_version`, but **not the thought**: it can repeat the employee's name.
+- **Reflection (M7):** `run_agent(..., reflector=None, inject_fault=False)`. After the guards accept a final answer, `_Run.reflect_on` appends `FAULT_SENTENCE` if `inject_fault` (logging `reflection.fault_injected` at WARN), then calls `reflector.reflect` and sends `result.final`. The reflection call's cost and tokens are added to the run totals. A fallback is never reflected: with a reflector, its result is `SKIPPED`. `inject_fault` without a reflector raises `ValueError` before any MCP or model call. `AgentResult` gains `reflection` and `fault_injected`; the root span and `run.end` record both.
 - **Logs:** `run.start`, `react.action`, `react.observation` (status only), `guard.blocked`, `agent.fallback`, `run.end` at INFO or WARN. The request text, thoughts, arguments and draft reply are at DEBUG only.
 
 ### `agent/trace_format.py` in detail
 
-- **`format_trace(result)`:** `Thought:`, `Action: tool({json})` and `Observation: {full result}` per step, a `GUARD: blocked <tool> (<codes>)` line after the step it followed, the final thought, then `Final Answer: APPROVE (rule R-NEW)` or `ESCALATE (E6, review REV-0001)` (labelled `Final Answer (fallback)` on a fallback) and `Reply:`. The full observation is fine here: this text is printed for the graded trace, not logged.
+- **`format_trace(result)`:** `Thought:`, `Action: tool({json})` and `Observation: {full result}` per step, a `GUARD: blocked <tool> (<codes>)` line after the step it followed, the final thought, then `Final Answer: APPROVE (rule R-NEW)` or `ESCALATE (E6, review REV-0001)` (labelled `Final Answer (fallback)` on a fallback), the reflection lines, and `Reply:`. Reflection lines: `REFLECTION: CONFIRMED`; or `Draft (before reflection): ...` then `REFLECTION: REVISED (<changes>)`; or `REFLECTION: SKIPPED (fallback reply)`; none without a reflector. A fault-injected run starts with `FAULT_LABEL`. The full observation is fine here: this text is printed for the graded trace, not logged.
 
 ### `agent/reflection.py` in detail
 
@@ -330,7 +331,7 @@ Build-MCP/
 ├── tests/
 │   ├── conftest.py         # FakeMessages: a fake Anthropic messages API (real SDK types)
 │   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report, test_guards, test_tools, test_prompts, test_trace_format, test_evals, test_reflection, test_test_style (AAA style guard)
-│   ├── integration/        # conftest (server, server_log, call_tool, listed_tools, tool_call_records), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools, test_agent_single_call, test_agent_loop, test_agent_reflection (M7, red), test_server_meta
+│   ├── integration/        # conftest (server, server_log, call_tool, listed_tools, tool_call_records), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools, test_agent_single_call, test_agent_loop, test_agent_reflection, test_server_meta
 │   └── live/               # test_real_agent: one PAID T1 run on Haiku (slow, eval); `make test-live` only
 ├── scripts/
 │   ├── client_demo.py      # calls the running server over HTTP
@@ -719,6 +720,12 @@ Each entry: the decision, and why.
 102. **Unsupported dates are removed in code after the model's pass.**
     *Why:* the fault-injection demo (§11) must show `REVISED` every time, so it can't depend on the model noticing the date. The model's answer stays useful evidence, and the code guarantees C4 for dates.
 
+103. **The fault is injected after the guards accept, and every fault run is labelled.**
+    *Why:* the guards never see the fault, so catching it is reflection's job alone, which is what the demo must prove. The `[FAULT INJECTED ...]` first line, the `fault_injected` span attribute and the `run.end` field keep demo evidence from being mistaken for a normal run.
+
+104. **The reflection call's usage is part of the run's totals.**
+    *Why:* `AgentResult.cost_usd` and the root span's `total_cost_usd` must equal the run's ledger lines (PLAN §4). Before this, the reflection line was in the ledger but not in the run total.
+
 ## 6. Change log
 
 | Date | Milestone | Change | Why |
@@ -774,6 +781,7 @@ Each entry: the decision, and why.
 | 2026-11-25 | M7 | Failing tests for `Reflector.reflect` and `ReflectionResult` (`test_reflection.py`): verdict handling, the copy rule, discarded revisions, code-made date removal, unparsed output, the ledger, span and logs | TDD red step |
 | 2026-11-25 | M7 | `Reflector` and `ReflectionResult` in `agent/reflection.py` | The §11 review of an accepted draft: one model call, the copy rule, guard re-check of revisions, and code-made date removal |
 | 2026-11-25 | M7 | Failing tests for reflection inside `run_agent` and fault injection (`tests/integration/test_agent_reflection.py`, with its own copy of the loop Harness), and for the reflection lines in `format_trace` (`test_trace_format.py`) | TDD red step |
+| 2026-11-25 | M7 | `run_agent` reflects on every accepted answer (`reflector`, `inject_fault`, `FAULT_SENTENCE`); `AgentResult.reflection` and `fault_injected`; `ReflectionResult` gains the `SKIPPED` status and its own usage; reflection lines and `FAULT_LABEL` in `format_trace` | Reflection is part of every agent run, with a labelled fault-injection demo |
 
 ## 7. Known issues and fixes
 

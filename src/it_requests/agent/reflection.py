@@ -29,7 +29,7 @@ from it_requests.agent.guards import (
     cites,
     latest_verdict,
 )
-from it_requests.agent.llm import LLMClient, system_blocks
+from it_requests.agent.llm import LLMClient, system_blocks, usage_numbers
 from it_requests.agent.prompts import SYSTEM_PROMPT_REFLECTION
 from it_requests.observability import log_event
 
@@ -40,6 +40,8 @@ CODE_FINDINGS = (C4_UNSUPPORTED_DATE, DENY_MISSING_NEXT_DATE, ESCALATE_MISSING_R
 
 QUESTIONS = tuple(f"q{n}" for n in range(1, 7))  # the six §11 questions
 Verdict = Literal["CONFIRMED", "REVISED"]
+# SKIPPED: a fallback run's reply is fixed, code-written text, so there is nothing to review.
+ReflectionStatus = Literal["CONFIRMED", "REVISED", "SKIPPED"]
 _VERDICTS = ("CONFIRMED", "REVISED")
 
 # Any YYYY-MM-DD, even an impossible one: an invented impossible date is still invented.
@@ -183,11 +185,15 @@ def parse_verdict(tool_input: Mapping[str, Any]) -> ReflectionVerdict:
 class ReflectionResult:
     """The outcome of one reflection: the answer to send and what reflection changed."""
 
-    status: Verdict
+    status: ReflectionStatus
     changes: tuple[str, ...]
     final: FinalAnswer
     draft_reply: str | None  # the reply before reflection, kept for the evidence log
     answers: dict[str, bool] | None  # the model's six answers; None if unparsed
+    # The reflection call's own usage, so the run's totals match the ledger (PLAN §4).
+    cost_usd: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 def _user_message(
@@ -266,12 +272,16 @@ class Reflector:
             # Status and changes only: the reply can hold the employee's name (PLAN §5).
             log_event(self._logger, "reflection.result", status=status, changes=changes)
             log_event(self._logger, "reflection.reply", logging.DEBUG, final_reply=reply)
+            usage = usage_numbers(self._llm.model, response.usage)
             return ReflectionResult(
                 status=status,
                 changes=tuple(changes),
                 final=final,
                 draft_reply=answer.draft_reply,
                 answers=verdict.answers if verdict else None,
+                cost_usd=usage["cost_usd"],
+                input_tokens=usage["input_tokens"],
+                output_tokens=usage["output_tokens"],
             )
 
     def _verdict(self, response: Message) -> ReflectionVerdict | None:

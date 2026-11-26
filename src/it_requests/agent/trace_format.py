@@ -9,6 +9,10 @@ from collections import defaultdict
 
 from it_requests.agent.guards import FinalAnswer
 from it_requests.agent.loop import AgentResult, GuardEvent
+from it_requests.agent.reflection import ReflectionResult
+
+# First line of every fault-injected trace, so the demo evidence is labelled wherever shown.
+FAULT_LABEL = "[FAULT INJECTED: demo run, a delivery promise was added to the draft]"
 
 
 def _decision(final: FinalAnswer) -> str:
@@ -17,13 +21,27 @@ def _decision(final: FinalAnswer) -> str:
     return f"{final.decision.upper()} (rule {final.rule_id})"
 
 
+def _reflection_lines(reflection: ReflectionResult | None) -> list[str]:
+    if reflection is None:
+        return []
+    if reflection.status == "REVISED":
+        # The draft is shown too: the evidence is what reflection changed, not only the result.
+        return [
+            f"Draft (before reflection): {reflection.draft_reply or '(none)'}",
+            f"REFLECTION: REVISED ({'; '.join(reflection.changes) or 'no description'})",
+        ]
+    if reflection.status == "SKIPPED":
+        return ["REFLECTION: SKIPPED (fallback reply)"]
+    return ["REFLECTION: CONFIRMED"]
+
+
 def format_trace(result: AgentResult) -> str:
     """One Thought/Action/Observation block per step, GUARD lines in place, then the answer."""
     guards: dict[int, list[GuardEvent]] = defaultdict(list)
     for event in result.guard_events:
         guards[event.after_step].append(event)
 
-    lines: list[str] = []
+    lines: list[str] = [FAULT_LABEL] if result.fault_injected else []
 
     def add_guards(after_step: int) -> None:
         for event in guards[after_step]:
@@ -40,5 +58,6 @@ def format_trace(result: AgentResult) -> str:
         lines.append(f"Thought: {result.final_thought}")
     label = "Final Answer (fallback)" if result.fallback else "Final Answer"
     lines.append(f"{label}: {_decision(result.final)}")
+    lines.extend(_reflection_lines(result.reflection))
     lines.append(f"Reply: {result.final.draft_reply or '(none)'}")
     return "\n".join(lines)

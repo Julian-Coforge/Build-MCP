@@ -5,6 +5,7 @@ Built on hand-made AgentResults, so the format is pinned independently of the lo
 
 from it_requests.agent.guards import FinalAnswer
 from it_requests.agent.loop import AgentResult, GuardEvent, Step
+from it_requests.agent.reflection import ReflectionResult
 from it_requests.agent.trace_format import format_trace
 
 EMPLOYEE = {"employee_id": "E1002", "role": "engineer", "status": "active"}
@@ -18,6 +19,8 @@ def _result(
     guard_events: tuple[GuardEvent, ...] = (),
     fallback: bool = False,
     final_thought: str = "",
+    reflection: ReflectionResult | None = None,
+    fault_injected: bool = False,
 ) -> AgentResult:
     return AgentResult(
         request_id="REQ-0001",
@@ -30,6 +33,8 @@ def _result(
         input_tokens=3000,
         output_tokens=300,
         final_thought=final_thought,
+        reflection=reflection,
+        fault_injected=fault_injected,
     )
 
 
@@ -166,3 +171,75 @@ def test_format_trace_missing_reply_is_shown_as_none() -> None:
 def test_format_trace_no_final_thought_adds_no_thought_line() -> None:
     # No final thought: the Final Answer follows the last Observation directly.
     assert _bare_lines()[-3].startswith("Observation:")
+
+
+# ---------- reflection lines ----------
+
+FAULTY_DRAFT = "Approved: you may have a second monitor. Delivered by 2026-11-28."
+FAULT_LABEL = "[FAULT INJECTED: demo run, a delivery promise was added to the draft]"
+
+
+def _reflection(
+    status: str, *, draft: str | None, changes: tuple[str, ...] = ()
+) -> ReflectionResult:
+    return ReflectionResult(
+        status=status,  # type: ignore[arg-type]
+        changes=changes,
+        final=APPROVE,
+        draft_reply=draft,
+        answers=None,
+    )
+
+
+CONFIRMED = _reflection("CONFIRMED", draft=APPROVE.draft_reply)
+REVISED = _reflection(
+    "REVISED",
+    draft=FAULTY_DRAFT,
+    changes=("Removed the delivery promise.", "removed unsupported date 2026-11-28"),
+)
+SKIPPED = _reflection("SKIPPED", draft=APPROVE.draft_reply)
+
+
+def test_format_trace_confirmed_reflection_sits_between_answer_and_reply() -> None:
+    lines = format_trace(_result(steps=(LOOKUP,), final=APPROVE, reflection=CONFIRMED))
+
+    assert lines.splitlines()[-3:] == [
+        "Final Answer: APPROVE (rule R-NEW)",
+        "REFLECTION: CONFIRMED",
+        "Reply: Approved: you may have a second monitor.",
+    ]
+
+
+def test_format_trace_revised_reflection_shows_draft_changes_and_final_reply() -> None:
+    lines = format_trace(_result(steps=(LOOKUP,), final=APPROVE, reflection=REVISED))
+
+    assert lines.splitlines()[-4:] == [
+        "Final Answer: APPROVE (rule R-NEW)",
+        f"Draft (before reflection): {FAULTY_DRAFT}",
+        "REFLECTION: REVISED (Removed the delivery promise.; removed unsupported date 2026-11-28)",
+        "Reply: Approved: you may have a second monitor.",
+    ]
+
+
+def test_format_trace_skipped_reflection_names_the_fallback() -> None:
+    text = format_trace(_result(steps=(LOOKUP,), final=APPROVE, reflection=SKIPPED))
+
+    assert "REFLECTION: SKIPPED (fallback reply)" in text.splitlines()
+
+
+def test_format_trace_no_reflection_adds_no_reflection_line() -> None:
+    text = format_trace(_result(steps=(LOOKUP,), final=APPROVE))
+
+    assert "REFLECTION" not in text
+
+
+def test_format_trace_fault_run_starts_with_the_label() -> None:
+    result = _result(steps=(LOOKUP,), final=APPROVE, reflection=REVISED, fault_injected=True)
+
+    assert format_trace(result).splitlines()[0] == FAULT_LABEL
+
+
+def test_format_trace_normal_run_has_no_fault_label() -> None:
+    text = format_trace(_result(steps=(LOOKUP,), final=APPROVE, reflection=CONFIRMED))
+
+    assert "FAULT INJECTED" not in text

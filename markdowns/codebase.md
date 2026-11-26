@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-25, milestone M7 in progress (the deterministic half of reflection in `agent/reflection.py`, the `reflection_verdict` tool, the reflection prompt and `Reflector.reflect`, the model's reflection call; not yet wired into the agent run or run live). M1 to M6 are verified.
+**Last updated:** 2026-11-25, milestone M7 in progress (the deterministic half of reflection in `agent/reflection.py`, the `reflection_verdict` tool, the reflection prompt and `Reflector.reflect`, the model's reflection call; failing tests for wiring reflection into `run_agent` and the labelled `--inject-fault` demo). M1 to M6 are verified.
 
 ---
 
@@ -330,7 +330,7 @@ Build-MCP/
 ├── tests/
 │   ├── conftest.py         # FakeMessages: a fake Anthropic messages API (real SDK types)
 │   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report, test_guards, test_tools, test_prompts, test_trace_format, test_evals, test_reflection, test_test_style (AAA style guard)
-│   ├── integration/        # conftest (server, server_log, call_tool, listed_tools, tool_call_records), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools, test_agent_single_call, test_agent_loop, test_server_meta
+│   ├── integration/        # conftest (server, server_log, call_tool, listed_tools, tool_call_records), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools, test_agent_single_call, test_agent_loop, test_agent_reflection (M7, red), test_server_meta
 │   └── live/               # test_real_agent: one PAID T1 run on Haiku (slow, eval); `make test-live` only
 ├── scripts/
 │   ├── client_demo.py      # calls the running server over HTTP
@@ -773,6 +773,7 @@ Each entry: the decision, and why.
 | 2026-11-25 | M7 | `agent/reflection.py`; `SYSTEM_PROMPT_REFLECTION` and `PROMPT_VERSION` `m7-v1` in `agent/prompts.py`; `guards.latest_verdict` made public | The deterministic half of reflection, ready for the model's reflection call |
 | 2026-11-25 | M7 | Failing tests for `Reflector.reflect` and `ReflectionResult` (`test_reflection.py`): verdict handling, the copy rule, discarded revisions, code-made date removal, unparsed output, the ledger, span and logs | TDD red step |
 | 2026-11-25 | M7 | `Reflector` and `ReflectionResult` in `agent/reflection.py` | The §11 review of an accepted draft: one model call, the copy rule, guard re-check of revisions, and code-made date removal |
+| 2026-11-25 | M7 | Failing tests for reflection inside `run_agent` and fault injection (`tests/integration/test_agent_reflection.py`, with its own copy of the loop Harness), and for the reflection lines in `format_trace` (`test_trace_format.py`) | TDD red step |
 
 ## 7. Known issues and fixes
 

@@ -40,6 +40,7 @@ from it_requests.data import load_employees, load_policy
 from it_requests.eligibility import check_request_eligibility
 from it_requests.employees import get_employee_info
 from it_requests.observability import JsonFormatter
+from it_requests.policy import get_policy_limits
 from it_requests.reviews import flag_for_human_review
 
 DIRECTORY = load_employees(config.EMPLOYEES_FILE)
@@ -434,6 +435,14 @@ UNSAFE_REVISION = "Your laptop is not due for refresh until 2028-03-10."
 DRAFT_WITH_INVENTED_DATE = f"{CLEAN_DENY_REPLY} A new one will arrive by {INVENTED_DATE}."
 # Leaves out next_eligible_date (2028-03-10), which no model verdict below adds.
 DRAFT_MISSING_NEXT_DATE = "Your laptop is not due for refresh yet (rule R-REFRESH)."
+# Reflection only ever sees drafts the guards accepted, so a denial's observations include
+# the policy lookup (REQUIRED_CALLS). Without it, every revision would fail the guards.
+ACCEPTED_DENY_OBSERVATIONS = [
+    *DENY_OBSERVATIONS,
+    Observation(
+        "get_policy_limits", {"role": "standard"}, get_policy_limits("standard", policy=POLICY)
+    ),
+]
 
 
 @dataclass
@@ -463,7 +472,7 @@ class _Env:
             run_id="run-1",
             request_text=REQUEST_TEXT,
             answer=answer,
-            observations=DENY_OBSERVATIONS,
+            observations=ACCEPTED_DENY_OBSERVATIONS,
         )
 
     def records(self, event: str) -> list[dict[str, Any]]:

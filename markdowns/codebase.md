@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-25, milestone M7 in progress (the deterministic half of reflection in `agent/reflection.py`, the `reflection_verdict` tool and the reflection prompt; failing tests for `Reflector.reflect`, the model's reflection call). M1 to M6 are verified.
+**Last updated:** 2026-11-25, milestone M7 in progress (the deterministic half of reflection in `agent/reflection.py`, the `reflection_verdict` tool, the reflection prompt and `Reflector.reflect`, the model's reflection call; not yet wired into the agent run or run live). M1 to M6 are verified.
 
 ---
 
@@ -35,7 +35,7 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 | `src/it_requests/agent/loop.py` | `run_agent`: the ReAct loop, with guards, the step cap and the E11 fallback. `AgentRequest`, `AgentResult`, `Step`, `GuardEvent`. | 81 integration tests with the fake model and the real in-process server, 99% coverage; one live twin (`tests/live`, paid, opt-in) |
 | `src/it_requests/agent/trace_format.py` | `format_trace`: the printed Thought / Action / Observation / Final Answer trace. Pure. | Unit-tested, 100% coverage |
 | `src/it_requests/agent/prompts.py` | `PROMPT_VERSION` (`m7-v1`), `SYSTEM_PROMPT_SINGLE_CALL` (M5), `SYSTEM_PROMPT_REACT` (rules copied from REQUIREMENTS §5, §6, §6.1, §10, plus the working method) and `SYSTEM_PROMPT_REFLECTION` (the six §11 questions word for word, C4, C5, the reply-only rule). | `test_prompts.py` checks every code, constraint, §11 question and key tool name, and no per-request content |
-| `src/it_requests/agent/reflection.py` | The deterministic half of reflection: `code_findings`, `unsupported_dates`, `remove_sentences_with`, `REFLECTION_TOOL`, `ReflectionVerdict`, `parse_verdict`. Pure. | Unit-tested with observations from the real tool functions, 100% coverage |
+| `src/it_requests/agent/reflection.py` | The deterministic half of reflection: `code_findings`, `unsupported_dates`, `remove_sentences_with`, `REFLECTION_TOOL`, `ReflectionVerdict`, `parse_verdict` (pure), and `Reflector` / `ReflectionResult` (one model call, stage `reflection`). | Unit-tested with observations from the real tool functions and FakeMessages, 100% coverage |
 | `src/it_requests/agent/mcp_bridge.py` | `MCPToolClient` protocol, `to_claude_tools` (MCP tool list to Claude tool definitions) and `call_tool` (one tool call with `request_id` and `traceparent` in `_meta`), plus the shared span helpers `traceparent` and `span_safe_arguments`. | Tested, 100% coverage |
 | `src/it_requests/agent/single_call.py` | `run_single_tool_call`: one model call, then the one tool call Claude picks, run on the server, inside an `agent.run` trace. | Integration-tested with the fake and the in-process server, 100% coverage |
 | `src/it_requests/agent/guards.py` | `check_tool_call` (C6, C7 before a call), `check_final_answer` (C1, C2, C3, required calls, C7 on the answer) and `violation_message`. Pure. | Unit-tested against results from the real tool functions, 100% coverage |
@@ -235,6 +235,16 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 - **`remove_sentences_with(reply, tokens)`:** splits on `. `, `! `, `? ` and newlines (so `$1.50` stays whole), drops each sentence that holds a token along with its separator, and returns the rest stripped.
 - **`REFLECTION_TOOL`:** `reflection_verdict`, strict. `thought`, `answers` (`q1` to `q6`, each a required boolean), `verdict` (`CONFIRMED` or `REVISED`), and `revised_reply` and `what_changed` (string or null). Every property is required.
 - **`parse_verdict(tool_input)`:** returns a `ReflectionVerdict` (with a copy of `answers`), or raises `ValueError` on any shape problem, a `REVISED` verdict with a null or blank reply, or a `CONFIRMED` verdict that carries a reply.
+- **`Reflector(*, llm, tracer, logger).reflect(*, request_id, run_id, request_text, answer, observations) -> ReflectionResult`:**
+  1. Runs `code_findings` on the accepted draft.
+  2. Inside a `reflection` span, makes one `llm.call` (stage `reflection`) with `system_blocks(SYSTEM_PROMPT_REFLECTION)`, only `REFLECTION_TOOL`, and one user message: the request text, the observations as JSON, the draft as JSON and the code findings.
+  3. Parses the first `reflection_verdict` call. A missing or malformed one logs `reflection.unparsed` (WARN) and counts as `CONFIRMED`.
+  4. A `REVISED` reply is checked again with `check_final_answer`. If any code comes back, the revision is discarded and `reflection.revision_discarded` (WARN, `codes`) is logged.
+  5. `code_findings` runs again on the reply. An unsupported date is removed in code with `remove_sentences_with`, adding the change `removed unsupported date <date>`. Any other finding left is logged as `reflection.unresolved` (WARN, `findings`).
+  6. **The copy rule:** the final answer is the accepted answer with only `draft_reply` replaced. `status` is `REVISED` when the reply changed, otherwise `CONFIRMED`.
+  7. Logs `reflection.result` (status and changes; the reply is at DEBUG only, as `reflection.reply`). The span gets `result`, `changes` (joined) and `findings` (from before the model call).
+- **`ReflectionResult`:** `status`, `changes`, `final`, `draft_reply` (before reflection) and `answers` (the model's six answers, or `None` when unparsed).
+- **Known gap:** the code-made date removal is not checked again by the guards. A sentence that holds both an invented date and the rule ID or review ID would lose the citation.
 
 ### `cost_report.py` in detail
 
@@ -703,6 +713,12 @@ Each entry: the decision, and why.
 100. **`parse_verdict` rejects a `CONFIRMED` verdict that carries a revised reply.**
     *Why:* the two contradict each other, so neither can be trusted. The caller then keeps the original draft, which the guards have already accepted.
 
+101. **Reflection can only change the reply text, and a rewrite must pass the guards again.**
+    *Why:* the decision comes from tested code and the guards. Copying every other field from the accepted answer, and discarding any rewrite that fails `check_final_answer`, means reflection can improve a reply or leave it unchanged, but never break C1 to C3.
+
+102. **Unsupported dates are removed in code after the model's pass.**
+    *Why:* the fault-injection demo (§11) must show `REVISED` every time, so it can't depend on the model noticing the date. The model's answer stays useful evidence, and the code guarantees C4 for dates.
+
 ## 6. Change log
 
 | Date | Milestone | Change | Why |
@@ -756,6 +772,7 @@ Each entry: the decision, and why.
 | 2026-11-25 | M7 | Failing tests for the deterministic reflection checks, the `reflection_verdict` tool and `parse_verdict` (`test_reflection.py`), and for `SYSTEM_PROMPT_REFLECTION` and `PROMPT_VERSION` `m7-v1` (`test_prompts.py`) | TDD red step |
 | 2026-11-25 | M7 | `agent/reflection.py`; `SYSTEM_PROMPT_REFLECTION` and `PROMPT_VERSION` `m7-v1` in `agent/prompts.py`; `guards.latest_verdict` made public | The deterministic half of reflection, ready for the model's reflection call |
 | 2026-11-25 | M7 | Failing tests for `Reflector.reflect` and `ReflectionResult` (`test_reflection.py`): verdict handling, the copy rule, discarded revisions, code-made date removal, unparsed output, the ledger, span and logs | TDD red step |
+| 2026-11-25 | M7 | `Reflector` and `ReflectionResult` in `agent/reflection.py` | The §11 review of an accepted draft: one model call, the copy rule, guard re-check of revisions, and code-made date removal |
 
 ## 7. Known issues and fixes
 

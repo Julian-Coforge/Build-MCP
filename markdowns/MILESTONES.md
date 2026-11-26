@@ -3,8 +3,8 @@
 > Where the project is right now. Updated as each item is finished.
 > Details for each milestone are in `PLAN.md` §13; what the code does is in `codebase.md`.
 
-**Current stage:** M7 done (reflection; live re-run 4/4 CONFIRMED, fault demo REVISED). Put #8 in the LaTeX, then **M8**.
-**Due:** 2026-11-26 · **LLM spend so far:** $0.33 of the $5 budget (code gate at $4.00) 
+**Current stage:** M8: eval 8/8 done. Left: PR + green CI on main, #1 and #9, assemble the PDF.
+**Due:** 2026-11-26 · **LLM spend so far:** $0.58 of the $5 budget (code gate at $4.00) 
 
 Legend: `[x]` done · `[ ]` not done · 📸 = screenshot for the submission PDF (number = deliverable order)
 
@@ -74,8 +74,8 @@ Legend: `[x]` done · `[ ]` not done · 📸 = screenshot for the submission PDF
 - [x] **#8** Reflection evidence collected: `traces/T1.txt` (CONFIRMED) and `traces/T1-fault.txt` (REVISED), plus the `reflection.result` log lines. Goes into the LaTeX as verbatim text.
 
 ## M8: Eval report and submission
-- [ ] T5 to T12 run once each: at least 7 of 8 correct
-- [ ] Cost report printed; total spend under $5
+- [x] T5 to T12 run once each on Sonnet: 8/8 correct (T11 reflection REVISED naturally)
+- [x] Cost report printed; total spend $0.58 of $5
 - [ ] Final CI run green on `main`
 - [ ] 📸 **#1** REQUIREMENTS.md and policy rules
 - [ ] 📸 **#9** Passing pipeline run

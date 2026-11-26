@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-25, milestone M6 (the ReAct loop, guards C1 to C3, C6 and C7, eval cases and live Sonnet results). M1 to M6 are verified.
+**Last updated:** 2026-11-25, milestone M7 in progress (the deterministic half of reflection in `agent/reflection.py`, the `reflection_verdict` tool, the reflection prompt and `Reflector.reflect`, wired into `run_agent` and every live script; `make agent-fault` is the labelled fault-injection demo; the reflection runs are not yet run live). M1 to M6 are verified.
 
 ---
 
@@ -32,16 +32,17 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 | `src/it_requests/agent/costs.py` | `cost_usd`, `ledger_total`, `check_budget` and `budget_from_env`, with `UnknownModelError`, `LedgerCorruptError` and `BudgetExceededError`: pure cost maths and the budget gate (PLAN §4). | Tested, 100% coverage; not yet called by any component |
 | `src/it_requests/agent/llm.py` | `LLMClient` (the one wrapper for paid model calls) and the `CreateMessage` protocol. Each call writes a cost-ledger line, an `llm.call` span and an `llm.call` log line. | Tested with a fake, 100% coverage; used by `single_call.py` |
 | `src/it_requests/agent/tools.py` | `with_thought`, `FINAL_ANSWER_TOOL`, `strip_thought`, `parse_final_answer`: the ReAct tool definitions. | Unit-tested on the real server schemas, 100% coverage |
-| `src/it_requests/agent/loop.py` | `run_agent`: the ReAct loop, with guards, the step cap and the E11 fallback. `AgentRequest`, `AgentResult`, `Step`, `GuardEvent`. | 81 integration tests with the fake model and the real in-process server, 99% coverage; one live twin (`tests/live`, paid, opt-in) |
+| `src/it_requests/agent/loop.py` | `run_agent`: the ReAct loop, with guards, the step cap, the E11 fallback, and reflection on every accepted answer (optional `reflector`, `inject_fault`). `AgentRequest`, `AgentResult`, `Step`, `GuardEvent`. | 81 integration tests with the fake model and the real in-process server, 99% coverage; one live twin (`tests/live`, paid, opt-in) |
 | `src/it_requests/agent/trace_format.py` | `format_trace`: the printed Thought / Action / Observation / Final Answer trace. Pure. | Unit-tested, 100% coverage |
-| `src/it_requests/agent/prompts.py` | `PROMPT_VERSION` (`m6-v1`), `SYSTEM_PROMPT_SINGLE_CALL` (M5) and `SYSTEM_PROMPT_REACT` (rules copied from REQUIREMENTS §5, §6, §6.1, §10, plus the working method). | `test_prompts.py` checks every code, constraint and key tool name, and no per-request content |
+| `src/it_requests/agent/prompts.py` | `PROMPT_VERSION` (`m7-v1`), `SYSTEM_PROMPT_SINGLE_CALL` (M5), `SYSTEM_PROMPT_REACT` (rules copied from REQUIREMENTS §5, §6, §6.1, §10, plus the working method) and `SYSTEM_PROMPT_REFLECTION` (the six §11 questions word for word, C4, C5, the reply-only rule). | `test_prompts.py` checks every code, constraint, §11 question and key tool name, and no per-request content |
+| `src/it_requests/agent/reflection.py` | The deterministic half of reflection: `code_findings`, `unsupported_dates`, `remove_sentences_with`, `REFLECTION_TOOL`, `ReflectionVerdict`, `parse_verdict` (pure), and `Reflector` / `ReflectionResult` (one model call, stage `reflection`). | Unit-tested with observations from the real tool functions and FakeMessages, 100% coverage |
 | `src/it_requests/agent/mcp_bridge.py` | `MCPToolClient` protocol, `to_claude_tools` (MCP tool list to Claude tool definitions) and `call_tool` (one tool call with `request_id` and `traceparent` in `_meta`), plus the shared span helpers `traceparent` and `span_safe_arguments`. | Tested, 100% coverage |
 | `src/it_requests/agent/single_call.py` | `run_single_tool_call`: one model call, then the one tool call Claude picks, run on the server, inside an `agent.run` trace. | Integration-tested with the fake and the in-process server, 100% coverage |
 | `src/it_requests/agent/guards.py` | `check_tool_call` (C6, C7 before a call), `check_final_answer` (C1, C2, C3, required calls, C7 on the answer) and `violation_message`. Pure. | Unit-tested against results from the real tool functions, 100% coverage |
 | `src/it_requests/cost_report.py` | `summarise`, `format_report` and `main`: spend from the cost ledger, in total and by env, stage and request, plus the budget left. | Tested, 100% coverage |
 | `scripts/agent_once.py` | The live, paid entry point. Loads `.env`, runs the budget gate first, then makes one real Haiku call against the running server and prints the tool, arguments, result status, cost and trace path. | Not unit-tested (thin wiring of tested parts); type-checks with `mypy --strict`; not yet run |
-| `scripts/run_agent.py` | One live, paid ReAct run for `--case T1` or `--text "..."`: budget gate first, prints `format_trace` and the cost, saves `traces/<case or request_id>.txt`. | Thin wiring; `mypy --strict` clean; not yet run |
-| `scripts/run_eval.py` | Live, paid eval: `--cases` (default T1-T4) x `--repeat` (default 3) on `--model` (default Sonnet). Prints the run count and estimate, asks `Continue? [y/N]`, checks the budget gate before every run, writes `evals/results/<UTC>-<model>.jsonl`, prints the pass table and total cost. | Thin wiring; `mypy --strict` clean; not yet run |
+| `scripts/run_agent.py` | One live, paid ReAct run for `--case T1` or `--text "..."`: budget gate first, always reflects (a `Reflector` on the same client and model), prints `format_trace` and the cost, saves `traces/<case or request_id>.txt`. `--inject-fault` prints `FAULT-INJECTED DEMO RUN` above the trace and saves to `traces/<name>-fault.txt` and `<request_id>-fault.jsonl`, never over a normal run's files. | Thin wiring; `mypy --strict` clean |
+| `scripts/run_eval.py` | Live, paid eval: `--cases` (default T1-T4) x `--repeat` (default 3) on `--model` (default Sonnet). Prints the run count and estimate, asks `Continue? [y/N]`, checks the budget gate before every run, writes `evals/results/<UTC>-<model>.jsonl` (each line with `reflection` and `reflection_changes`), prints the pass table and total cost. Always reflects; deliberately has no `--inject-fault`, so eval results never hold a planted fault. | Thin wiring; `mypy --strict` clean |
 | `src/it_requests/evals.py` | `load_cases`, `grade`, `summarise`, `format_summary`, `resolve_model`, `estimate_usd`. | Unit-tested, 100% coverage |
 | `evals/cases.json` | T1 to T12 (`cases-v1`): request text, expected decision and code, required tools. | Loaded and checked by `test_evals.py` |
 | `.env.example` | Placeholder `ANTHROPIC_API_KEY` and `BUDGET_USD=4.00`. Copied to the gitignored `.env`. | Committed; no real key |
@@ -218,11 +219,33 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
   - **No tool_use:** the reply is `"Call final_answer to finish."`, which counts as a model call.
 - **Fallback (E11), run by the code:** the model-call limit, a second rejected final answer, or a turn after a C6 block that doesn't call `flag_for_human_review`. If a ticket exists, it is reused with its own code (C7). Otherwise the code flags with `"E11: <why>."`, using the last `employee_id` argument, else the first `E####` in the request text, else `UNKNOWN`. The reply is fixed text with the `review_id`. `agent.fallback` is logged at WARN.
 - **Spans:** `agent.run` (request_id, run_id, prompt_version, model; at the end decision, rule_id or reason_code, review_id, fallback, total_cost_usd, total_tokens), with `llm.call` and `tool.*` children. Tool spans carry the redacted arguments, `result_status` and `data_version`, but **not the thought**: it can repeat the employee's name.
+- **Reflection (M7):** `run_agent(..., reflector=None, inject_fault=False)`. After the guards accept a final answer, `_Run.reflect_on` appends `FAULT_SENTENCE` if `inject_fault` (logging `reflection.fault_injected` at WARN), then calls `reflector.reflect` and sends `result.final`. The reflection call's cost and tokens are added to the run totals. A fallback is never reflected: with a reflector, its result is `SKIPPED`. `inject_fault` without a reflector raises `ValueError` before any MCP or model call. `AgentResult` gains `reflection` and `fault_injected`; the root span and `run.end` record both.
 - **Logs:** `run.start`, `react.action`, `react.observation` (status only), `guard.blocked`, `agent.fallback`, `run.end` at INFO or WARN. The request text, thoughts, arguments and draft reply are at DEBUG only.
 
 ### `agent/trace_format.py` in detail
 
-- **`format_trace(result)`:** `Thought:`, `Action: tool({json})` and `Observation: {full result}` per step, a `GUARD: blocked <tool> (<codes>)` line after the step it followed, the final thought, then `Final Answer: APPROVE (rule R-NEW)` or `ESCALATE (E6, review REV-0001)` (labelled `Final Answer (fallback)` on a fallback) and `Reply:`. The full observation is fine here: this text is printed for the graded trace, not logged.
+- **`format_trace(result)`:** `Thought:`, `Action: tool({json})` and `Observation: {full result}` per step, a `GUARD: blocked <tool> (<codes>)` line after the step it followed, the final thought, then `Final Answer: APPROVE (rule R-NEW)` or `ESCALATE (E6, review REV-0001)` (labelled `Final Answer (fallback)` on a fallback), the reflection lines, and `Reply:`. Reflection lines: `REFLECTION: CONFIRMED`; or `Draft (before reflection): ...` then `REFLECTION: REVISED (<changes>)`; or `REFLECTION: SKIPPED (fallback reply)`; none without a reflector. A fault-injected run starts with `FAULT_LABEL`. The full observation is fine here: this text is printed for the graded trace, not logged.
+
+### `agent/reflection.py` in detail
+
+- **`code_findings(answer, observations)`:** returns codes in `CODE_FINDINGS` order:
+  - `C4_UNSUPPORTED_DATE`: a `YYYY-MM-DD` in the reply that appears in the JSON text of no successful observation. Error results support nothing.
+  - `DENY_MISSING_NEXT_DATE`: a denial whose latest successful eligibility result (`guards.latest_verdict`) has a `next_eligible_date` that the reply leaves out (§11 q4).
+  - `ESCALATE_MISSING_REVIEW_ID`: an escalation whose reply doesn't cite `review_id` (§11 q5; the C3 guard already blocks this).
+- **`unsupported_dates(reply, observations)`:** the dates behind C4, in order of appearance, without duplicates.
+- **`remove_sentences_with(reply, tokens)`:** splits on `. `, `! `, `? ` and newlines (so `$1.50` stays whole), drops each sentence that holds a token along with its separator, and returns the rest stripped.
+- **`REFLECTION_TOOL`:** `reflection_verdict`, strict. `thought`, `answers` (`q1` to `q6`, each a required boolean), `verdict` (`CONFIRMED` or `REVISED`), and `revised_reply` and `what_changed` (string or null). Every property is required.
+- **`parse_verdict(tool_input)`:** returns a `ReflectionVerdict` (with a copy of `answers`), or raises `ValueError` on any shape problem, a `REVISED` verdict with a null or blank reply, or a `CONFIRMED` verdict that carries a reply.
+- **`Reflector(*, llm, tracer, logger).reflect(*, request_id, run_id, request_text, answer, observations) -> ReflectionResult`:**
+  1. Runs `code_findings` on the accepted draft.
+  2. Inside a `reflection` span, makes one `llm.call` (stage `reflection`) with `system_blocks(SYSTEM_PROMPT_REFLECTION)`, only `REFLECTION_TOOL`, and one user message: the request text, the observations as JSON, the draft as JSON and the code findings.
+  3. Parses the first `reflection_verdict` call. A missing or malformed one logs `reflection.unparsed` (WARN) and counts as `CONFIRMED`.
+  4. A `REVISED` reply is checked again with `check_final_answer`. If any code comes back, the revision is discarded and `reflection.revision_discarded` (WARN, `codes`) is logged.
+  5. `code_findings` runs again on the reply. An unsupported date is removed in code with `remove_sentences_with`, adding the change `removed unsupported date <date>`. Any other finding left is logged as `reflection.unresolved` (WARN, `findings`).
+  6. **The copy rule:** the final answer is the accepted answer with only `draft_reply` replaced. `status` is `REVISED` when the reply changed, otherwise `CONFIRMED`.
+  7. Logs `reflection.result` (status and changes; the reply is at DEBUG only, as `reflection.reply`). The span gets `result`, `changes` (joined) and `findings` (from before the model call).
+- **`ReflectionResult`:** `status`, `changes`, `final`, `draft_reply` (before reflection) and `answers` (the model's six answers, or `None` when unparsed).
+- **Known gap:** the code-made date removal is not checked again by the guards. A sentence that holds both an invented date and the rule ID or review ID would lose the citation.
 
 ### `cost_report.py` in detail
 
@@ -293,6 +316,7 @@ Build-MCP/
 │   │   ├── guards.py       # C1-C3, C6, C7 and required-call checks (pure)
 │   │   ├── loop.py         # run_agent: the ReAct loop, guards, step cap, E11 fallback
 │   │   ├── tools.py        # thought on every tool, final_answer, parse helpers
+│   │   ├── reflection.py   # code checks on the draft, the reflection_verdict tool
 │   │   ├── trace_format.py # the printed Thought/Action/Observation trace
 │   │   ├── mcp_bridge.py   # MCP tools to Claude tool definitions; call one tool
 │   │   └── single_call.py  # run_single_tool_call (brief step 5a)
@@ -306,9 +330,9 @@ Build-MCP/
 │   └── policy.json         # role entitlements (REQUIREMENTS §4.1)
 ├── tests/
 │   ├── conftest.py         # FakeMessages: a fake Anthropic messages API (real SDK types)
-│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report, test_guards, test_tools, test_prompts, test_trace_format, test_evals, test_test_style (AAA style guard)
-│   ├── integration/        # conftest (server, server_log, call_tool, listed_tools, tool_call_records), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools, test_agent_single_call, test_agent_loop, test_server_meta
-│   └── live/               # test_real_agent: one PAID T1 run on Haiku (slow, eval); `make test-live` only
+│   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report, test_guards, test_tools, test_prompts, test_trace_format, test_evals, test_reflection, test_test_style (AAA style guard)
+│   ├── integration/        # conftest (server, server_log, call_tool, listed_tools, tool_call_records), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools, test_agent_single_call, test_agent_loop, test_agent_reflection, test_server_meta
+│   └── live/               # test_real_agent: one PAID T1 run on Haiku with reflection (slow, eval); `make test-live` only
 ├── scripts/
 │   ├── client_demo.py      # calls the running server over HTTP
 │   ├── agent_once.py       # one live, paid agent run (brief step 5a)
@@ -374,7 +398,8 @@ make cost-report        # spend so far from logs/cost_ledger.jsonl
 
 **Agent, full ReAct run and eval** (paid; the server must be running):
 ```bash
-make agent CASE=T3      # one run of a case (Haiku by default), printed trace, traces/T3.txt
+make agent CASE=T3      # one run of a case (Haiku by default), with reflection; traces/T3.txt
+make agent-fault CASE=T1  # PAID, labelled demo: a planted delivery promise that reflection must catch; traces/T1-fault.txt
 python scripts/run_agent.py --text "E1002: can I get a headset?" --model sonnet
 make reset-reviews      # optional: start the eval with an empty review queue
 make eval               # T1-T4 x 3 on Sonnet: shows the estimate (about $1.02) and asks first
@@ -681,6 +706,30 @@ Each entry: the decision, and why.
 97. **`run_eval.py` asks before spending and checks the budget gate before every run.**
     *Why:* a 12-run Sonnet eval costs about $1 (estimate), a quarter of the budget. The prompt keeps a human in the loop, and a per-run gate stops cleanly with the results so far on disk.
 
+98. **Reflection is split: code checks what it can, the model judges the rest.**
+    *Why:* invented dates, a missing next date and a missing review ID can be checked exactly, with no cost and no variation between runs. The model's pass is kept for what code can't judge (C5 promises, whether every item was answered), and is told to fix the code findings.
+
+99. **A date counts as supported if it appears anywhere in a successful result's JSON text.**
+    *Why:* dates live in nested fields (`equipment[].issued_date`, `next_eligible_date`, `as_of`). Searching the text needs no list of date fields to keep in step with the tools.
+
+100. **`parse_verdict` rejects a `CONFIRMED` verdict that carries a revised reply.**
+    *Why:* the two contradict each other, so neither can be trusted. The caller then keeps the original draft, which the guards have already accepted.
+
+101. **Reflection can only change the reply text, and a rewrite must pass the guards again.**
+    *Why:* the decision comes from tested code and the guards. Copying every other field from the accepted answer, and discarding any rewrite that fails `check_final_answer`, means reflection can improve a reply or leave it unchanged, but never break C1 to C3.
+
+102. **Unsupported dates are removed in code after the model's pass.**
+    *Why:* the fault-injection demo (§11) must show `REVISED` every time, so it can't depend on the model noticing the date. The model's answer stays useful evidence, and the code guarantees C4 for dates.
+
+103. **The fault is injected after the guards accept, and every fault run is labelled.**
+    *Why:* the guards never see the fault, so catching it is reflection's job alone, which is what the demo must prove. The `[FAULT INJECTED ...]` first line, the `fault_injected` span attribute and the `run.end` field keep demo evidence from being mistaken for a normal run.
+
+104. **The reflection call's usage is part of the run's totals.**
+    *Why:* `AgentResult.cost_usd` and the root span's `total_cost_usd` must equal the run's ledger lines (PLAN §4). Before this, the reflection line was in the ledger but not in the run total.
+
+105. **Every live run reflects; only `run_agent.py` can inject a fault.**
+    *Why:* reflection is part of how the agent works (§11), so a run without it would not be the system being graded. The eval script has no `--inject-fault`, so a planted fault can never end up in eval results, and a fault run's trace files get a `-fault` suffix so they never overwrite real evidence.
+
 ## 6. Change log
 
 | Date | Milestone | Change | Why |
@@ -731,6 +780,13 @@ Each entry: the decision, and why.
 | 2026-11-24 | M6 | `agent/loop.py` (`run_agent`, `AgentRequest`, `AgentResult`, `Step`, `GuardEvent`), `agent/trace_format.py` (`format_trace`); `traceparent` and `span_safe_arguments` moved to `mcp_bridge.py` | The ReAct loop with guards, the step cap and the E11 fallback enforced in code, plus the printed trace |
 | 2026-11-24 | M6 | `evals/cases.json` (T1 to T12, `cases-v1`); failing tests for the eval helpers (`test_evals.py`) and for the server logging `request_id` from `_meta` (`test_server_meta.py`) | TDD red step |
 | 2026-11-24 | M6 | `evals.py`; `server.py` reads `request_id` from `_meta`; `guards.cites` made public; `scripts/run_agent.py`, `scripts/run_eval.py`; `make agent` and `make eval` | Live runs with a printed trace, a graded eval, and server logs joined to the agent's `request_id` |
+| 2026-11-25 | M7 | Failing tests for the deterministic reflection checks, the `reflection_verdict` tool and `parse_verdict` (`test_reflection.py`), and for `SYSTEM_PROMPT_REFLECTION` and `PROMPT_VERSION` `m7-v1` (`test_prompts.py`) | TDD red step |
+| 2026-11-25 | M7 | `agent/reflection.py`; `SYSTEM_PROMPT_REFLECTION` and `PROMPT_VERSION` `m7-v1` in `agent/prompts.py`; `guards.latest_verdict` made public | The deterministic half of reflection, ready for the model's reflection call |
+| 2026-11-25 | M7 | Failing tests for `Reflector.reflect` and `ReflectionResult` (`test_reflection.py`): verdict handling, the copy rule, discarded revisions, code-made date removal, unparsed output, the ledger, span and logs | TDD red step |
+| 2026-11-25 | M7 | `Reflector` and `ReflectionResult` in `agent/reflection.py` | The §11 review of an accepted draft: one model call, the copy rule, guard re-check of revisions, and code-made date removal |
+| 2026-11-25 | M7 | Failing tests for reflection inside `run_agent` and fault injection (`tests/integration/test_agent_reflection.py`, with its own copy of the loop Harness), and for the reflection lines in `format_trace` (`test_trace_format.py`) | TDD red step |
+| 2026-11-25 | M7 | `run_agent` reflects on every accepted answer (`reflector`, `inject_fault`, `FAULT_SENTENCE`); `AgentResult.reflection` and `fault_injected`; `ReflectionResult` gains the `SKIPPED` status and its own usage; reflection lines and `FAULT_LABEL` in `format_trace` | Reflection is part of every agent run, with a labelled fault-injection demo |
+| 2026-11-25 | M7 | `run_agent.py` always reflects and gains `--inject-fault` (`-fault` trace files, on-screen label); `run_eval.py` always reflects and records `reflection` and `reflection_changes`; `make agent-fault`; the live T1 test passes a `Reflector` and gains `test_live_t1_reflection_confirms` | Every live run reflects, and the §11 fault demo is one labelled command |
 
 ## 7. Known issues and fixes
 

@@ -6,6 +6,7 @@ here in code before any tool call or final answer is accepted. When the run can'
 cleanly, the CODE escalates as E11 (the fallback): it never guesses a decision.
 """
 
+import dataclasses
 import json
 import logging
 import re
@@ -33,6 +34,7 @@ from it_requests.agent.mcp_bridge import (
     traceparent,
 )
 from it_requests.agent.prompts import PROMPT_VERSION, SYSTEM_PROMPT_REACT
+from it_requests.agent.reflection import ReflectionResult, Reflector
 from it_requests.agent.tools import (
     FINAL_ANSWER_TOOL,
     parse_final_answer,
@@ -43,6 +45,10 @@ from it_requests.observability import log_event, request_id_var
 
 FINAL_ANSWER = FINAL_ANSWER_TOOL["name"]
 NUDGE = "Call final_answer to finish."
+# The --inject-fault demo (REQUIREMENTS §11): a date in no data file (breaks C4) and a
+# delivery promise (breaks C5). Added only after the guards accept, so reflection alone
+# must catch it. Every fault run is labelled as such wherever it is shown.
+FAULT_SENTENCE = "Your new equipment will be delivered by 2026-11-28."
 _EMPLOYEE_ID_IN_TEXT = re.compile(r"\b[Ee][0-9]{4}\b")
 # One correction is allowed; a second rejected final answer triggers the fallback.
 _MAX_REJECTED_FINAL_ANSWERS = 2
@@ -85,6 +91,8 @@ class AgentResult:
     input_tokens: int
     output_tokens: int
     final_thought: str = ""
+    reflection: ReflectionResult | None = None  # None when no reflector was given
+    fault_injected: bool = False
 
 
 @dataclass
@@ -241,6 +249,32 @@ class _Run:
         # All results in ONE user message: the API expects every tool_use answered together.
         return None, results
 
+    # --- Reflection ---
+
+    def reflect_on(
+        self, answer: FinalAnswer, reflector: Reflector | None, inject_fault: bool
+    ) -> tuple[FinalAnswer, ReflectionResult | None]:
+        """Review an accepted answer (§11). The fault, if asked for, goes in first."""
+        if inject_fault:
+            answer = dataclasses.replace(
+                answer, draft_reply=f"{answer.draft_reply or ''} {FAULT_SENTENCE}".strip()
+            )
+            log_event(self.logger, "reflection.fault_injected", logging.WARNING)
+        if reflector is None:
+            return answer, None
+        result = reflector.reflect(
+            request_id=self.request.request_id,
+            run_id=self.run_id,
+            request_text=self.request.request_text,
+            answer=answer,
+            observations=self.observations(),
+        )
+        # The reflection call is part of this run's spend, like every loop step.
+        self.cost_usd += result.cost_usd
+        self.input_tokens += result.input_tokens
+        self.output_tokens += result.output_tokens
+        return result.final, result
+
     # --- Fallback ---
 
     def employee_id(self) -> str:
@@ -293,8 +327,16 @@ async def run_agent(
     tracer: Tracer,
     logger: logging.Logger,
     max_model_calls: int = 12,  # PLAN §4 per-run limit
+    reflector: Reflector | None = None,
+    inject_fault: bool = False,
 ) -> AgentResult:
-    """Run the ReAct loop for one request and return the decision and the full trace."""
+    """Run the ReAct loop for one request and return the decision and the full trace.
+
+    With a reflector, every accepted final answer is reviewed (§11) before it is returned.
+    """
+    if inject_fault and reflector is None:
+        # A fault with nothing to catch it would only send a bad reply.
+        raise ValueError("inject_fault needs a reflector to catch the fault")
     run = _Run(request, llm, mcp_client, tracer, logger, run_id=uuid.uuid4().hex)
     token = request_id_var.set(request.request_id)  # every log line carries request_id
     try:
@@ -351,12 +393,21 @@ async def run_agent(
                 messages.append({"role": "user", "content": user_content})
 
             fallback = ending.answer is None
-            final = (
-                ending.answer
-                if ending.answer is not None
-                else await run.fallback(ending.fallback_reason or "unknown")
-            )
-            _finish(root, run, final, fallback, calls)
+            reflection: ReflectionResult | None = None
+            if ending.answer is not None:
+                final, reflection = run.reflect_on(ending.answer, reflector, inject_fault)
+            else:
+                final = await run.fallback(ending.fallback_reason or "unknown")
+                if reflector is not None:
+                    # Never reflected: the fallback reply is fixed, code-written text.
+                    reflection = ReflectionResult(
+                        status="SKIPPED",
+                        changes=(),
+                        final=final,
+                        draft_reply=final.draft_reply,
+                        answers=None,
+                    )
+            _finish(root, run, final, fallback, calls, reflection, inject_fault)
             return AgentResult(
                 request_id=request.request_id,
                 run_id=run.run_id,
@@ -368,12 +419,22 @@ async def run_agent(
                 input_tokens=run.input_tokens,
                 output_tokens=run.output_tokens,
                 final_thought=ending.thought,
+                reflection=reflection,
+                fault_injected=inject_fault,
             )
     finally:
         request_id_var.reset(token)
 
 
-def _finish(root: Any, run: _Run, final: FinalAnswer, fallback: bool, calls: int) -> None:
+def _finish(
+    root: Any,
+    run: _Run,
+    final: FinalAnswer,
+    fallback: bool,
+    calls: int,
+    reflection: ReflectionResult | None,
+    fault_injected: bool,
+) -> None:
     """Root span totals and the run.end line. The reply is logged at DEBUG only."""
     outcome = {"rule_id": final.rule_id, "reason_code": final.reason_code}
     # Span attributes can't be None: set only the fields that apply to this decision.
@@ -383,6 +444,8 @@ def _finish(root: Any, run: _Run, final: FinalAnswer, fallback: bool, calls: int
             **{k: v for k, v in outcome.items() if v is not None},
             **({"review_id": final.review_id} if final.review_id else {}),
             "fallback": fallback,
+            "fault_injected": fault_injected,
+            **({"reflection": reflection.status} if reflection else {}),
             "total_cost_usd": run.cost_usd,
             "total_tokens": run.input_tokens + run.output_tokens,
         }
@@ -397,6 +460,8 @@ def _finish(root: Any, run: _Run, final: FinalAnswer, fallback: bool, calls: int
         reason_code=final.reason_code,
         review_id=final.review_id,
         fallback=fallback,
+        reflection=reflection.status if reflection else None,
+        fault_injected=fault_injected,
         model_calls=calls,
         cost_usd=run.cost_usd,
         input_tokens=run.input_tokens,

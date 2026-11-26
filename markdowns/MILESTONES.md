@@ -3,8 +3,8 @@
 > Where the project is right now. Updated as each item is finished.
 > Details for each milestone are in `PLAN.md` §13; what the code does is in `codebase.md`.
 
-**Current stage:** M6 verified and merged (Sonnet eval 12/12). Put #5 to #7 in the LaTeX, then **M7** (reflection).
-**Due:** 2026-11-26 · **LLM spend so far:** $0.00 of the $5 budget (code gate at $4.00)
+**Current stage:** M7 done (reflection; live re-run 4/4 CONFIRMED, fault demo REVISED). Put #8 in the LaTeX, then **M8**.
+**Due:** 2026-11-26 · **LLM spend so far:** $0.33 of the $5 budget (code gate at $4.00) 
 
 Legend: `[x]` done · `[ ]` not done · 📸 = screenshot for the submission PDF (number = deliverable order)
 
@@ -67,11 +67,11 @@ Legend: `[x]` done · `[ ]` not done · 📸 = screenshot for the submission PDF
 - [ ] 📸 **#7** Final decision and reply for each of the 4 requests, including escalation reasons
 
 ## M7: Reflection (brief step 6, Part 5)
-- [ ] §11 checklist implemented, with tests using a fake LLM
-- [ ] Normal run logs `REFLECTION: CONFIRMED`
-- [ ] `--inject-fault` run logs `REFLECTION: REVISED (...)`
-- [ ] T1 to T4 re-run, with no regressions
-- [ ] 📸 **#8** Reflection evidence (the confirmed run and the fault-injected run, side by side)
+- [x] §11 checklist implemented, with tests using a fake LLM
+- [x] Normal run logs `REFLECTION: CONFIRMED`
+- [x] `--inject-fault` run logs `REFLECTION: REVISED (...)`
+- [x] T1 to T4 re-run on Sonnet, with no regressions (4/4, all CONFIRMED, $0.088)
+- [x] **#8** Reflection evidence collected: `traces/T1.txt` (CONFIRMED) and `traces/T1-fault.txt` (REVISED), plus the `reflection.result` log lines. Goes into the LaTeX as verbatim text.
 
 ## M8: Eval report and submission
 - [ ] T5 to T12 run once each: at least 7 of 8 correct

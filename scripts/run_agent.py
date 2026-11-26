@@ -22,6 +22,7 @@ from it_requests import config
 from it_requests.agent import costs
 from it_requests.agent.llm import LLMClient
 from it_requests.agent.loop import AgentRequest, run_agent
+from it_requests.agent.reflection import Reflector
 from it_requests.agent.trace_format import format_trace
 from it_requests.evals import CASES_FILE, load_cases, resolve_model
 from it_requests.observability import configure_logging, log_event
@@ -39,6 +40,9 @@ def parse_args() -> argparse.Namespace:
     # type=resolve_model: "haiku" / "sonnet" accepted; Opus refused with a clear error.
     parser.add_argument("--model", default=config.DEV_MODEL, type=resolve_model)
     parser.add_argument("--env", default="dev", choices=["dev", "eval", "demo"])
+    # The §11 demo: a delivery promise is planted in the accepted draft so reflection must
+    # catch it. Labelled on screen and saved to a separate file, never mixed with real runs.
+    parser.add_argument("--inject-fault", action="store_true", help="PAID labelled demo run")
     return parser.parse_args()
 
 
@@ -65,7 +69,9 @@ async def run(request: AgentRequest, name: str, args: argparse.Namespace) -> Non
         message: Message = client.messages.create(stream=False, **kwargs)
         return message
 
-    tracer, provider = make_tracer(config.TRACES_DIR / f"{request.request_id}.jsonl")
+    # A fault run gets its own files: it must never overwrite a normal run's evidence.
+    suffix = "-fault" if args.inject_fault else ""
+    tracer, provider = make_tracer(config.TRACES_DIR / f"{request.request_id}{suffix}.jsonl")
     try:
         llm = LLMClient(
             create=create,
@@ -76,6 +82,9 @@ async def run(request: AgentRequest, name: str, args: argparse.Namespace) -> Non
             logger=logger,
             clock=time.monotonic,
         )
+        # Every live run reflects (§11), on the same client and model as the loop, so its
+        # cost lands in the same ledger and its span in the same trace.
+        reflector = Reflector(llm=llm, tracer=tracer, logger=logger)
         async with Client(SERVER_URL) as mcp_client:
             result = await run_agent(
                 request,
@@ -83,16 +92,20 @@ async def run(request: AgentRequest, name: str, args: argparse.Namespace) -> Non
                 mcp_client=mcp_client,  # type: ignore[arg-type]  # meta typed as RequestParamsMeta
                 tracer=tracer,
                 logger=logger,
+                reflector=reflector,
+                inject_fault=args.inject_fault,
             )
     finally:
         provider.shutdown()  # flush every span to the trace file, even after an error
 
     trace = format_trace(result)
+    if args.inject_fault:
+        print("FAULT-INJECTED DEMO RUN")
     print(trace)
     tokens = result.input_tokens + result.output_tokens
     print(f"\nRun cost: ${result.cost_usd:.6f} ({args.model}, env={args.env}, {tokens} tokens)")
     # The printed trace is the graded evidence (deliverable 6). traces/ is gitignored.
-    text_path = config.TRACES_DIR / f"{name}.txt"
+    text_path = config.TRACES_DIR / f"{name}{suffix}.txt"
     text_path.parent.mkdir(parents=True, exist_ok=True)
     text_path.write_text(trace + "\n", encoding="utf-8")
     print(f"Trace saved: {text_path.relative_to(config.REPO_ROOT)}")

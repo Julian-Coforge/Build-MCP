@@ -28,6 +28,7 @@ from it_requests.agent import costs
 from it_requests.agent.llm import LLMClient
 from it_requests.agent.loop import AgentRequest, AgentResult, run_agent
 from it_requests.agent.prompts import PROMPT_VERSION
+from it_requests.agent.reflection import Reflector
 from it_requests.data import load_employees, load_policy
 from it_requests.evals import (
     CASES_FILE,
@@ -102,6 +103,8 @@ def record(
         # Kept so C4/C5 (no invented dates, no promises) can be reviewed by hand. Mock data.
         "draft_reply": final.draft_reply,
         "fallback": result.fallback,
+        "reflection": result.reflection.status if result.reflection else None,
+        "reflection_changes": list(result.reflection.changes) if result.reflection else [],
         "tools": [s.tool for s in result.steps],
         "guard_events": [asdict(e) for e in result.guard_events],
         "grade": asdict(g),
@@ -141,12 +144,15 @@ async def run_all(
                         logger=logger,
                         clock=time.monotonic,
                     )
+                    # Always reflect; never inject a fault: eval results must hold only
+                    # real behaviour, so there is deliberately no --inject-fault here.
                     result = await run_agent(
                         AgentRequest(case.request_id, case.text),
                         llm=llm,
                         mcp_client=mcp_client,  # type: ignore[arg-type]  # meta: RequestParamsMeta
                         tracer=tracer,
                         logger=logger,
+                        reflector=Reflector(llm=llm, tracer=tracer, logger=logger),
                     )
                 finally:
                     provider.shutdown()

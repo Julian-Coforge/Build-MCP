@@ -3,7 +3,7 @@
 > This file is kept up to date with every code change, in the same commit.
 > It describes the code **as it is now**, not as planned. For the plan, see `PLAN.md`. For the rules the system must follow, see `REQUIREMENTS.md`.
 
-**Last updated:** 2026-11-25, milestone M7 in progress (the deterministic half of reflection in `agent/reflection.py`, the `reflection_verdict` tool, the reflection prompt and `Reflector.reflect`, wired into `run_agent` with the labelled fault-injection option; the live scripts don't pass a reflector or `--inject-fault` yet). M1 to M6 are verified.
+**Last updated:** 2026-11-25, milestone M7 in progress (the deterministic half of reflection in `agent/reflection.py`, the `reflection_verdict` tool, the reflection prompt and `Reflector.reflect`, wired into `run_agent` and every live script; `make agent-fault` is the labelled fault-injection demo; the reflection runs are not yet run live). M1 to M6 are verified.
 
 ---
 
@@ -41,8 +41,8 @@ M0 is done. In M1, the mock employee data, its validating loader and `get_employ
 | `src/it_requests/agent/guards.py` | `check_tool_call` (C6, C7 before a call), `check_final_answer` (C1, C2, C3, required calls, C7 on the answer) and `violation_message`. Pure. | Unit-tested against results from the real tool functions, 100% coverage |
 | `src/it_requests/cost_report.py` | `summarise`, `format_report` and `main`: spend from the cost ledger, in total and by env, stage and request, plus the budget left. | Tested, 100% coverage |
 | `scripts/agent_once.py` | The live, paid entry point. Loads `.env`, runs the budget gate first, then makes one real Haiku call against the running server and prints the tool, arguments, result status, cost and trace path. | Not unit-tested (thin wiring of tested parts); type-checks with `mypy --strict`; not yet run |
-| `scripts/run_agent.py` | One live, paid ReAct run for `--case T1` or `--text "..."`: budget gate first, prints `format_trace` and the cost, saves `traces/<case or request_id>.txt`. | Thin wiring; `mypy --strict` clean; not yet run |
-| `scripts/run_eval.py` | Live, paid eval: `--cases` (default T1-T4) x `--repeat` (default 3) on `--model` (default Sonnet). Prints the run count and estimate, asks `Continue? [y/N]`, checks the budget gate before every run, writes `evals/results/<UTC>-<model>.jsonl`, prints the pass table and total cost. | Thin wiring; `mypy --strict` clean; not yet run |
+| `scripts/run_agent.py` | One live, paid ReAct run for `--case T1` or `--text "..."`: budget gate first, always reflects (a `Reflector` on the same client and model), prints `format_trace` and the cost, saves `traces/<case or request_id>.txt`. `--inject-fault` prints `FAULT-INJECTED DEMO RUN` above the trace and saves to `traces/<name>-fault.txt` and `<request_id>-fault.jsonl`, never over a normal run's files. | Thin wiring; `mypy --strict` clean |
+| `scripts/run_eval.py` | Live, paid eval: `--cases` (default T1-T4) x `--repeat` (default 3) on `--model` (default Sonnet). Prints the run count and estimate, asks `Continue? [y/N]`, checks the budget gate before every run, writes `evals/results/<UTC>-<model>.jsonl` (each line with `reflection` and `reflection_changes`), prints the pass table and total cost. Always reflects; deliberately has no `--inject-fault`, so eval results never hold a planted fault. | Thin wiring; `mypy --strict` clean |
 | `src/it_requests/evals.py` | `load_cases`, `grade`, `summarise`, `format_summary`, `resolve_model`, `estimate_usd`. | Unit-tested, 100% coverage |
 | `evals/cases.json` | T1 to T12 (`cases-v1`): request text, expected decision and code, required tools. | Loaded and checked by `test_evals.py` |
 | `.env.example` | Placeholder `ANTHROPIC_API_KEY` and `BUDGET_USD=4.00`. Copied to the gitignored `.env`. | Committed; no real key |
@@ -332,7 +332,7 @@ Build-MCP/
 │   ├── conftest.py         # FakeMessages: a fake Anthropic messages API (real SDK types)
 │   ├── unit/               # test_config, test_data, test_policy_data, test_employees, test_policy, test_eligibility, test_reviews, test_observability, test_costs, test_tracing, test_llm, test_mcp_bridge, test_cost_report, test_guards, test_tools, test_prompts, test_trace_format, test_evals, test_reflection, test_test_style (AAA style guard)
 │   ├── integration/        # conftest (server, server_log, call_tool, listed_tools, tool_call_records), test_server_employee_tool, test_server_policy_tool, test_server_eligibility_tool, test_server_review_tool, test_server_all_tools, test_agent_single_call, test_agent_loop, test_agent_reflection, test_server_meta
-│   └── live/               # test_real_agent: one PAID T1 run on Haiku (slow, eval); `make test-live` only
+│   └── live/               # test_real_agent: one PAID T1 run on Haiku with reflection (slow, eval); `make test-live` only
 ├── scripts/
 │   ├── client_demo.py      # calls the running server over HTTP
 │   ├── agent_once.py       # one live, paid agent run (brief step 5a)
@@ -398,7 +398,8 @@ make cost-report        # spend so far from logs/cost_ledger.jsonl
 
 **Agent, full ReAct run and eval** (paid; the server must be running):
 ```bash
-make agent CASE=T3      # one run of a case (Haiku by default), printed trace, traces/T3.txt
+make agent CASE=T3      # one run of a case (Haiku by default), with reflection; traces/T3.txt
+make agent-fault CASE=T1  # PAID, labelled demo: a planted delivery promise that reflection must catch; traces/T1-fault.txt
 python scripts/run_agent.py --text "E1002: can I get a headset?" --model sonnet
 make reset-reviews      # optional: start the eval with an empty review queue
 make eval               # T1-T4 x 3 on Sonnet: shows the estimate (about $1.02) and asks first
@@ -726,6 +727,9 @@ Each entry: the decision, and why.
 104. **The reflection call's usage is part of the run's totals.**
     *Why:* `AgentResult.cost_usd` and the root span's `total_cost_usd` must equal the run's ledger lines (PLAN §4). Before this, the reflection line was in the ledger but not in the run total.
 
+105. **Every live run reflects; only `run_agent.py` can inject a fault.**
+    *Why:* reflection is part of how the agent works (§11), so a run without it would not be the system being graded. The eval script has no `--inject-fault`, so a planted fault can never end up in eval results, and a fault run's trace files get a `-fault` suffix so they never overwrite real evidence.
+
 ## 6. Change log
 
 | Date | Milestone | Change | Why |
@@ -782,6 +786,7 @@ Each entry: the decision, and why.
 | 2026-11-25 | M7 | `Reflector` and `ReflectionResult` in `agent/reflection.py` | The §11 review of an accepted draft: one model call, the copy rule, guard re-check of revisions, and code-made date removal |
 | 2026-11-25 | M7 | Failing tests for reflection inside `run_agent` and fault injection (`tests/integration/test_agent_reflection.py`, with its own copy of the loop Harness), and for the reflection lines in `format_trace` (`test_trace_format.py`) | TDD red step |
 | 2026-11-25 | M7 | `run_agent` reflects on every accepted answer (`reflector`, `inject_fault`, `FAULT_SENTENCE`); `AgentResult.reflection` and `fault_injected`; `ReflectionResult` gains the `SKIPPED` status and its own usage; reflection lines and `FAULT_LABEL` in `format_trace` | Reflection is part of every agent run, with a labelled fault-injection demo |
+| 2026-11-25 | M7 | `run_agent.py` always reflects and gains `--inject-fault` (`-fault` trace files, on-screen label); `run_eval.py` always reflects and records `reflection` and `reflection_changes`; `make agent-fault`; the live T1 test passes a `Reflector` and gains `test_live_t1_reflection_confirms` | Every live run reflects, and the §11 fault demo is one labelled command |
 
 ## 7. Known issues and fixes
 

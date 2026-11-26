@@ -5,8 +5,8 @@ pytest's addopts, `make check` and CI. Run it on purpose with `make serve` in on
 and `make test-live` in another. It skips, rather than fails, when there is no API key or
 no running server, and it respects the same budget gate as scripts/run_agent.py.
 
-One run is shared by every test in this module (module-scoped fixture), so the three
-behaviours below cost one model run, not three.
+One run is shared by every test in this module (module-scoped fixture), so the behaviours
+below cost one agent run (three loop calls plus one reflection call), not one each.
 """
 
 import asyncio
@@ -27,6 +27,7 @@ from it_requests import config
 from it_requests.agent import costs
 from it_requests.agent.llm import LLMClient
 from it_requests.agent.loop import AgentRequest, AgentResult, run_agent
+from it_requests.agent.reflection import Reflector
 from it_requests.evals import CASES_FILE, load_cases
 from it_requests.tracing import make_tracer
 
@@ -79,6 +80,7 @@ async def _run_t1(trace_path: Path) -> AgentResult:
                 mcp_client=mcp_client,  # type: ignore[arg-type]
                 tracer=tracer,
                 logger=logger,
+                reflector=Reflector(llm=llm, tracer=tracer, logger=logger),
             )
     finally:
         provider.shutdown()
@@ -112,3 +114,8 @@ def test_live_t1_cites_r_new(t1_result: AgentResult) -> None:
 
 def test_live_t1_finishes_without_fallback(t1_result: AgentResult) -> None:
     assert t1_result.fallback is False
+
+
+def test_live_t1_reflection_confirms(t1_result: AgentResult) -> None:
+    # A clean T1 draft should pass the §11 checklist unchanged.
+    assert t1_result.reflection is not None and t1_result.reflection.status == "CONFIRMED"

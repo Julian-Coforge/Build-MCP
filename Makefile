@@ -1,6 +1,6 @@
 # Run from an activated virtualenv (source .venv/bin/activate).
 # `make check` runs the same steps as CI, in the same fast-to-slow order.
-.PHONY: install format lint type test test-live audit check serve client-demo reset-reviews agent-once cost-report agent eval
+.PHONY: install format lint type test test-live audit check serve client-demo reset-reviews agent-once cost-report agent agent-fault eval
 
 install:
 	python -m pip install -e ".[dev]"
@@ -53,6 +53,11 @@ cost-report:
 CASE ?= T1
 agent:
 	python scripts/run_agent.py --case $(CASE)
+
+# PAID, labelled fault-injection demo (REQUIREMENTS §11): plants a delivery promise in the
+# accepted draft so reflection must catch it. Saved as traces/<case>-fault.txt.
+agent-fault:
+	python scripts/run_agent.py --case $(CASE) --inject-fault
 
 # PAID eval: T1-T4 x 3 on Sonnet by default. Prints the estimate and asks before spending.
 eval:
